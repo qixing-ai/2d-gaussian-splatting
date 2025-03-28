@@ -113,3 +113,132 @@ def fov2focal(fov, pixels):
 
 def focal2fov(focal, pixels):
     return 2*math.atan(pixels/(2*focal))
+
+def apply_radial_distortion(x, y, k):
+    """应用径向畸变
+    
+    Args:
+        x, y: 归一化的相机坐标
+        k: 径向畸变参数，可以是一个值 (SIMPLE_RADIAL) 或两个值 (RADIAL)
+        
+    Returns:
+        dx, dy: 畸变位移量
+    """
+    r2 = x*x + y*y
+    
+    if len(k) == 1:
+        # SIMPLE_RADIAL: 只有一个径向畸变系数 k
+        radial = k[0] * r2
+    elif len(k) == 2:
+        # RADIAL: 有两个径向畸变系数 k1, k2
+        radial = k[0] * r2 + k[1] * r2 * r2
+    else:
+        raise ValueError(f"Unsupported number of distortion parameters: {len(k)}")
+    
+    dx = x * radial
+    dy = y * radial
+    
+    return dx, dy
+
+def undistort_points(x, y, k, max_iterations=100, tolerance=1e-8):
+    """使用迭代方法对点进行去畸变
+    
+    Args:
+        x, y: 畸变后的归一化相机坐标
+        k: 径向畸变参数
+        max_iterations: 最大迭代次数
+        tolerance: 收敛容差
+        
+    Returns:
+        x_undist, y_undist: 去畸变后的归一化相机坐标
+    """
+    # 初始猜测值为输入坐标
+    x_undist, y_undist = x, y
+    
+    for i in range(max_iterations):
+        # 计算当前猜测值产生的畸变
+        dx, dy = apply_radial_distortion(x_undist, y_undist, k)
+        
+        # 计算畸变后的坐标
+        x_dist = x_undist + dx
+        y_dist = y_undist + dy
+        
+        # 计算畸变坐标与目标坐标之间的误差
+        error_x = x_dist - x
+        error_y = y_dist - y
+        
+        # 更新猜测值
+        x_undist = x_undist - error_x
+        y_undist = y_undist - error_y
+        
+        # 如果误差足够小，则退出迭代
+        if abs(error_x) < tolerance and abs(error_y) < tolerance:
+            break
+    
+    return x_undist, y_undist
+
+def apply_radial_distortion_vectorized(x, y, k):
+    """应用径向畸变的向量化版本
+    
+    Args:
+        x, y: 归一化的相机坐标数组
+        k: 径向畸变参数，可以是一个值 (SIMPLE_RADIAL) 或两个值 (RADIAL)
+        
+    Returns:
+        dx, dy: 畸变位移量数组
+    """
+    r2 = x*x + y*y
+    
+    if len(k) == 1:
+        # SIMPLE_RADIAL: 只有一个径向畸变系数 k
+        radial = k[0] * r2
+    elif len(k) == 2:
+        # RADIAL: 有两个径向畸变系数 k1, k2
+        radial = k[0] * r2 + k[1] * r2 * r2
+    else:
+        raise ValueError(f"Unsupported number of distortion parameters: {len(k)}")
+    
+    dx = x * radial
+    dy = y * radial
+    
+    return dx, dy
+
+def undistort_points_vectorized(x, y, k, max_iterations=20, tolerance=1e-8):
+    """使用迭代方法对点数组进行去畸变
+    
+    Args:
+        x, y: 畸变后的归一化相机坐标数组
+        k: 径向畸变参数
+        max_iterations: 最大迭代次数
+        tolerance: 收敛容差
+        
+    Returns:
+        x_undist, y_undist: 去畸变后的归一化相机坐标数组
+    """
+    # 初始猜测值为输入坐标
+    x_undist, y_undist = x.copy(), y.copy()
+    
+    for i in range(max_iterations):
+        # 计算当前猜测值产生的畸变
+        dx, dy = apply_radial_distortion_vectorized(x_undist, y_undist, k)
+        
+        # 计算畸变后的坐标
+        x_dist = x_undist + dx
+        y_dist = y_undist + dy
+        
+        # 计算畸变坐标与目标坐标之间的误差
+        error_x = x_dist - x
+        error_y = y_dist - y
+        
+        # 更新猜测值
+        x_undist = x_undist - error_x
+        y_undist = y_undist - error_y
+        
+        # 计算最大误差
+        max_error = max(np.max(np.abs(error_x)), np.max(np.abs(error_y)))
+        
+        # 如果误差足够小，则退出迭代
+        if max_error < tolerance:
+            break
+    
+    return x_undist, y_undist

@@ -48,12 +48,18 @@ def loadCam(args, id, cam_info, resolution_scale):
         loaded_mask = None
         gt_image = resized_image_rgb
 
+    # 获取相机模型类型和畸变参数
+    camera_model = getattr(cam_info, 'camera_model', "PINHOLE")
+    distortion_params = getattr(cam_info, 'distortion_params', None)
+
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY,
                   image=gt_image, gt_alpha_mask=loaded_mask,
                   image_name=cam_info.image_name, uid=id,
                   principal_point_ndc=cam_info.principal_point_ndc,
-                  data_device=args.data_device)
+                  data_device=args.data_device,
+                  camera_model=camera_model,
+                  distortion_params=distortion_params)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
