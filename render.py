@@ -102,7 +102,15 @@ if __name__ == "__main__":
         
         o3d.io.write_triangle_mesh(os.path.join(train_dir, name), mesh)
         print("mesh saved at {}".format(os.path.join(train_dir, name)))
+        # 同时保存OBJ格式
+        obj_name = name.replace('.ply', '.obj')
+        o3d.io.write_triangle_mesh(os.path.join(train_dir, obj_name), mesh)
+        print("mesh saved as OBJ at {}".format(os.path.join(train_dir, obj_name)))
         # post-process the mesh and save, saving the largest N clusters
         mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster)
         o3d.io.write_triangle_mesh(os.path.join(train_dir, name.replace('.ply', '_post.ply')), mesh_post)
         print("mesh post processed saved at {}".format(os.path.join(train_dir, name.replace('.ply', '_post.ply'))))
+        # 同时保存后处理后的OBJ格式
+        obj_post_name = name.replace('.ply', '_post.obj')
+        o3d.io.write_triangle_mesh(os.path.join(train_dir, obj_post_name), mesh_post)
+        print("mesh post processed saved as OBJ at {}".format(os.path.join(train_dir, obj_post_name)))
