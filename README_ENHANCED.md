@@ -44,10 +44,10 @@ python train.py -s <数据集路径> [增强参数]
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--source_path`, `-s` | (必填) | 数据集路径 |
-| `--use_edge_aware_normal` | False | 启用边缘感知法向损失 |
+| `--use_edge_aware_normal` | True | 启用边缘感知法向损失 |
 | `--edge_weight_exponent` | 4.0 | 边缘权重指数q |
 | `--lambda_consistency` | 0.5 | 原始法线一致性权重 |
-| `--use_ms_ssim` | False | 启用多尺度SSIM |
+| `--use_ms_ssim` | True | 启用多尺度SSIM |
 | `--lambda_dssim` | 0.2 | SSIM损失权重 |
 | `--lambda_normal` | 0.05 | 法线正则化强度 |
 | `--lambda_dist` | 0.0 | 深度失真正则化强度 |
@@ -55,24 +55,24 @@ python train.py -s <数据集路径> [增强参数]
 
 ### 示例
 
-基本训练（原始行为，不使用增强）：
+基本训练（默认启用边缘感知法向损失和多尺度SSIM）：
 ```bash
 python train.py -s /path/to/dataset
 ```
 
-启用边缘感知法向损失：
+禁用边缘感知法向损失：
 ```bash
-python train.py -s /path/to/dataset --use_edge_aware_normal
+python train.py -s /path/to/dataset --no_edge_aware_normal
 ```
 
-启用多尺度SSIM损失：
+禁用多尺度SSIM损失：
 ```bash
-python train.py -s /path/to/dataset --use_ms_ssim
+python train.py -s /path/to/dataset --no_ms_ssim
 ```
 
-同时启用两项增强并调整参数：
+自定义参数示例：
 ```bash
-python train.py -s /path/to/dataset --use_edge_aware_normal --edge_weight_exponent 6.0 --use_ms_ssim
+python train.py -s /path/to/dataset --edge_weight_exponent 6.0 --lambda_dssim 0.3
 ```
 
 ## 预期效果

@@ -32,7 +32,7 @@ def config_parser():
                       help="启用边缘感知法向损失")
     parser.add_argument('--no_edge_aware_normal', action="store_false", dest="use_edge_aware_normal",
                       help="禁用边缘感知法向损失")
-    parser.set_defaults(use_edge_aware_normal=False)  # 默认不启用，保持原始行为
+    parser.set_defaults(use_edge_aware_normal=True)  # 默认启用
     parser.add_argument('--edge_weight_exponent', type=float, default=4.0,
                       help="边缘权重指数q (默认: 4)")
     parser.add_argument('--lambda_consistency', type=float, default=0.5,
@@ -41,7 +41,7 @@ def config_parser():
                       help="启用多尺度SSIM损失")
     parser.add_argument('--no_ms_ssim', action="store_false", dest="use_ms_ssim",
                       help="禁用多尺度SSIM，使用普通SSIM")
-    parser.set_defaults(use_ms_ssim=False)  # 默认不启用，保持原始行为
+    parser.set_defaults(use_ms_ssim=True)  # 默认启用
     parser.add_argument('--lambda_dssim', type=float, default=0.2,
                       help="SSIM损失权重 (默认: 0.2)")
     

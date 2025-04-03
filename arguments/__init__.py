@@ -102,12 +102,12 @@ class OptimizationParams(ParamGroup):
         self.opacity_cull = 0.05
         
         # 边缘感知法向损失参数
-        self.use_edge_aware_normal = False  # 默认关闭
+        self.use_edge_aware_normal = True  # 默认启用
         self.edge_weight_exponent = 4.0     # 边缘权重指数q
         self.lambda_consistency = 0.5       # 原始法线一致性权重
         
         # 多尺度SSIM参数
-        self.use_ms_ssim = False            # 默认关闭
+        self.use_ms_ssim = True            # 默认启用
 
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
