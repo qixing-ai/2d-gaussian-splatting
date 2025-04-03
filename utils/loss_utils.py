@@ -13,6 +13,8 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
+from pytorch_msssim import ms_ssim  # 导入多尺度SSIM
+from utils.image_utils import gradient_map # 导入图像梯度计算函数
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -71,4 +73,82 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean()
     else:
         return ssim_map.mean(1).mean(1).mean(1)
+
+def compute_color_loss(rendered_img, gt_img, lambda_dssim=0.2, use_ms_ssim=True):
+    """
+    计算颜色损失，支持普通SSIM和多尺度SSIM
+    
+    Args:
+        rendered_img: 渲染图像
+        gt_img: 真值图像
+        lambda_dssim: SSIM在损失中的权重
+        use_ms_ssim: 是否使用多尺度SSIM
+        
+    Returns:
+        color_loss: 颜色损失
+    """
+    l1_loss_val = l1_loss(rendered_img, gt_img)
+    
+    if use_ms_ssim:
+        # 确保图像尺寸符合MS-SSIM要求（至少大于48×48）
+        if rendered_img.shape[1] >= 48 and rendered_img.shape[2] >= 48:
+            # 5个尺度的权重，推荐值
+            weights = [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
+            ms_ssim_loss = 1.0 - ms_ssim(rendered_img.unsqueeze(0), 
+                                        gt_img.unsqueeze(0), 
+                                        data_range=1.0, 
+                                        weights=weights)
+            ssim_loss = ms_ssim_loss
+        else:
+            # 如果图像太小，回退到普通SSIM
+            ssim_loss = 1.0 - ssim(rendered_img, gt_img)
+    else:
+        # 使用普通SSIM
+        ssim_loss = 1.0 - ssim(rendered_img, gt_img)
+    
+    return (1.0 - lambda_dssim) * l1_loss_val + lambda_dssim * ssim_loss
+
+def edge_aware_normal_loss(rendered_normal, gt_rgb, surf_normal, q=4, lambda_consistency=0.5):
+    """
+    边缘感知法向损失
+    
+    Args:
+        rendered_normal: 渲染的法线图 [3, H, W]
+        gt_rgb: 真值RGB图像 [3, H, W]
+        surf_normal: 表面法线 [3, H, W]
+        q: 边缘权重指数
+        lambda_consistency: 原始法线一致性的权重
+        
+    Returns:
+        loss: 边缘感知法向损失
+    """
+    # 确保输入格式正确
+    if len(gt_rgb.shape) == 3:  # [3, H, W]
+        gt_rgb = gt_rgb.unsqueeze(0)  # 变为 [1, 3, H, W]
+    
+    # 计算边缘图
+    grad_rgb = gradient_map(gt_rgb)  # [1, 1, H, W]
+    
+    # 确保法线格式正确
+    if len(rendered_normal.shape) == 3:  # [3, H, W]
+        rendered_normal_norm = ((rendered_normal + 1) / 2).unsqueeze(0)  # 变为 [1, 3, H, W]，并归一化到[0,1]
+    else:
+        rendered_normal_norm = (rendered_normal + 1) / 2
+    
+    # 计算法线曲率 |∇N|
+    grad_normal = gradient_map(rendered_normal_norm)  # [1, 1, H, W]
+    
+    # 确保权重正确
+    weight = torch.clamp(grad_rgb.squeeze(), 0.0, 1.0) ** q  # [H, W]
+    
+    # 加权损失：边缘区域（权重小）放松约束，平坦区域（权重大）强约束
+    edge_loss = (grad_normal.squeeze() * (1.0 - weight)).mean()
+    
+    # 原始法线一致性损失
+    consistency_loss = (1.0 - (rendered_normal * surf_normal).sum(dim=0)).mean()
+    
+    # 组合损失
+    loss = edge_loss + lambda_consistency * consistency_loss
+    
+    return loss
 

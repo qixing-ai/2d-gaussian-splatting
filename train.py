@@ -12,14 +12,14 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, compute_color_loss, edge_aware_normal_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr, render_net_image
+from utils.image_utils import psnr, render_net_image, colormap
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 try:
@@ -70,21 +70,50 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
         gt_image = viewpoint_cam.original_image.cuda()
+        
+        # 颜色损失计算
         Ll1 = l1_loss(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        
+        # 检查是否启用了多尺度SSIM
+        if hasattr(opt, 'use_ms_ssim') and opt.use_ms_ssim:
+            loss = compute_color_loss(image, gt_image, lambda_dssim=opt.lambda_dssim, use_ms_ssim=True)
+        else:
+            # 原始颜色损失计算
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
         # regularization
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
 
         rend_dist = render_pkg["rend_dist"]
-        rend_normal  = render_pkg['rend_normal']
+        rend_normal = render_pkg['rend_normal']
         surf_normal = render_pkg['surf_normal']
-        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-        normal_loss = lambda_normal * (normal_error).mean()
+        
+        # 法线损失计算
+        if lambda_normal > 0:
+            # 检查是否启用了边缘感知法向损失
+            if hasattr(opt, 'use_edge_aware_normal') and opt.use_edge_aware_normal:
+                # 使用边缘感知法向损失
+                edge_weight_exp = opt.edge_weight_exponent if hasattr(opt, 'edge_weight_exponent') else 4.0
+                lambda_cons = opt.lambda_consistency if hasattr(opt, 'lambda_consistency') else 0.5
+                
+                normal_loss = lambda_normal * edge_aware_normal_loss(
+                    rendered_normal=rend_normal,
+                    gt_rgb=gt_image,
+                    surf_normal=surf_normal,
+                    q=edge_weight_exp,
+                    lambda_consistency=lambda_cons
+                )
+            else:
+                # 使用原始法线一致性损失
+                normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+                normal_loss = lambda_normal * (normal_error).mean()
+        else:
+            normal_loss = torch.tensor(0.0, device='cuda')
+            
         dist_loss = lambda_dist * (rend_dist).mean()
 
-        # loss
+        # 总损失
         total_loss = loss + dist_loss + normal_loss
         
         total_loss.backward()
@@ -263,10 +292,18 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
     print("Optimizing " + args.model_path)
+    
+    # 打印增强功能状态
+    if hasattr(args, 'use_edge_aware_normal') and args.use_edge_aware_normal:
+        print("启用边缘感知法向损失: 边缘权重指数={}, 一致性权重={}".format(
+            args.edge_weight_exponent, args.lambda_consistency))
+    if hasattr(args, 'use_ms_ssim') and args.use_ms_ssim:
+        print("启用多尺度SSIM损失")
 
     # Initialize system state (RNG)
     safe_state(args.quiet)
