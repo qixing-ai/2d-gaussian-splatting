@@ -15,15 +15,15 @@
 
 ```cpp
 // 添加新的配置参数用于控制过滤器大小和精度
-#define FILTER_SIZE 0.75f // 增加滤波器大小以提高采样率
-#define FILTER_INV_SQUARE 1.77777778f // 1 / (FILTER_SIZE * FILTER_SIZE)
+#define FILTER_SIZE 1.5f // 增加滤波器大小以提高采样率
+#define FILTER_INV_SQUARE 0.444444f // 1 / (FILTER_SIZE * FILTER_SIZE)
 
 // 添加近/远平面的配置参数以提高精度
 #define NEAR_PLANE 0.1f
 #define FAR_PLANE 150.0f
 
 // 添加额外的超采样倍数以提高渲染质量
-#define SUPERSAMPLE_FACTOR 2
+#define SUPERSAMPLE_FACTOR 8
 ```
 
 ## 三、实现细节
