@@ -97,8 +97,8 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
-        self.lambda_dist = 0.0
-        self.lambda_normal = 0.05
+        self.lambda_dist = 0.0005
+        self.lambda_normal = 0.1
         self.opacity_cull = 0.05
         
         # 边缘感知法向损失参数
