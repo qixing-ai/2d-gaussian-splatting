@@ -118,6 +118,11 @@ class OptimizationParams(ParamGroup):
         self.lambda_depth_convergence = 0.1  # 深度收敛损失权重
         self.conv_start_iter = 3000  # 从哪个迭代开始应用深度收敛损失
         
+        # 背景损失参数
+        self.use_background_loss = True  # 是否启用背景损失，默认开启
+        self.lambda_background = 0.02  # 背景损失权重，调整为0.02
+        self.bg_start_iter = 2000  # 从哪个迭代开始应用背景损失
+        
         # 其他参数保持不变
         self.use_edge_aware_normal = True
         self.edge_weight_exponent = 4.0
@@ -136,6 +141,9 @@ class OptimizationParams(ParamGroup):
             "use_depth_convergence": "启用深度收敛损失，强制相邻高斯基元深度接近，使表面更平滑",
             "lambda_depth_convergence": "深度收敛损失权重 (默认: 0.01)",
             "conv_start_iter": "从哪个迭代开始应用深度收敛损失 (默认: 3000)",
+            "use_background_loss": "启用背景损失，强制透明背景区域的高斯不透明度趋近于0",
+            "lambda_background": "背景损失权重 (默认: 0.01)",
+            "bg_start_iter": "从哪个迭代开始应用背景损失 (默认: 2000)",
         }
         
         super().__init__(parser, "Optimization Parameters", descriptions=descriptions)

@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, compute_color_loss, edge_aware_normal_loss, depth_convergence_loss
+from utils.loss_utils import l1_loss, ssim, compute_color_loss, edge_aware_normal_loss, depth_convergence_loss, background_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -22,6 +22,8 @@ from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image, colormap
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import matplotlib.pyplot as plt
+import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -49,6 +51,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
     ema_conv_for_log = 0.0  # 用于记录深度收敛损失
+    ema_bg_for_log = 0.0  # 用于记录背景损失
     
     # 添加视角loss记录
     viewpoint_losses = {}  # 记录每个视角的loss
@@ -94,6 +97,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
         # 深度收敛损失权重设置
         lambda_conv = opt.lambda_depth_convergence if hasattr(opt, 'use_depth_convergence') and opt.use_depth_convergence and iteration > opt.conv_start_iter else 0.0
+        # 背景损失权重设置
+        lambda_bg = opt.lambda_background if hasattr(opt, 'use_background_loss') and opt.use_background_loss and iteration > opt.bg_start_iter else 0.0
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal = render_pkg['rend_normal']
@@ -133,8 +138,63 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             convergence_loss = torch.tensor(0.0, device='cuda')
 
+        # 计算背景损失
+        if lambda_bg > 0:
+            # 获取渲染的alpha通道
+            render_alpha = render_pkg['rend_alpha']
+            
+            # 每100次迭代打印一次背景损失调试信息
+            if iteration % 100 == 0:
+                # 计算背景损失并获取调试信息
+                bg_loss_val, debug_info = background_loss(render_alpha, gt_image, threshold=0.1, debug=True)
+                bg_loss = lambda_bg * bg_loss_val
+                
+                # 打印调试信息
+                print(f"\n[背景损失调试] 迭代: {iteration}")
+                print(f"  背景区域平均Alpha: {debug_info['bg_alpha_avg'].item():.4f}")
+                print(f"  前景区域平均Alpha: {debug_info['fg_alpha_avg'].item():.4f}")
+                print(f"  背景损失值: {bg_loss.item():.6f}")
+                print(f"  背景像素比例: {debug_info['bg_pixel_ratio'].item():.2f}")
+                
+                # 如果debug_info中有自适应阈值信息，则打印
+                if 'adaptive_threshold' in debug_info:
+                    print(f"  使用自适应阈值: {debug_info['adaptive_threshold'].item():.4f}")
+                else:
+                    print(f"  使用固定阈值: 0.1")
+                
+                # 如果是训练初期，每1000次迭代记录前景/背景掩码到tensorboard
+                if tb_writer is not None and iteration <= 5000 and iteration % 1000 == 0:
+                    # 修复维度问题，确保掩码是2D格式 (HW)
+                    background_mask = debug_info['background_mask'].squeeze()  # 从 [1,H,W] 变为 [H,W]
+                    foreground_mask = debug_info['foreground_mask'].squeeze()
+                    
+                    # 添加到tensorboard
+                    tb_writer.add_image('masks/background', background_mask, iteration, dataformats='HW')
+                    tb_writer.add_image('masks/foreground', foreground_mask, iteration, dataformats='HW')
+                    
+                    # 保存背景掩码可视化图像
+                    bg_mask_path = save_mask_visualization(
+                        background_mask,  # 已经squeeze过的掩码
+                        gt_image, 
+                        iteration, 
+                        scene.model_path, 
+                        "background_mask"
+                    )
+                    print(f"  背景掩码可视化已保存到: {bg_mask_path}")
+                    
+                    # 记录到TensorBoard
+                    if tb_writer is not None:
+                        bg_image = plt.imread(bg_mask_path)
+                        bg_image = np.transpose(bg_image[:, :, :3], (2, 0, 1))  # HWC -> CHW
+                        tb_writer.add_image('visualizations/background_mask', bg_image, iteration)
+            else:
+                # 计算普通背景损失
+                bg_loss = lambda_bg * background_loss(render_alpha, gt_image)
+        else:
+            bg_loss = torch.tensor(0.0, device='cuda')
+
         # 总损失
-        total_loss = loss + dist_loss + normal_loss + convergence_loss
+        total_loss = loss + dist_loss + normal_loss + convergence_loss + bg_loss
         
         # 记录当前视角的loss
         viewpoint_name = viewpoint_cam.image_name
@@ -165,6 +225,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
             ema_conv_for_log = 0.4 * convergence_loss.item() + 0.6 * ema_conv_for_log
+            ema_bg_for_log = 0.4 * bg_loss.item() + 0.6 * ema_bg_for_log
 
             if iteration % 10 == 0:
                 loss_dict = {
@@ -172,6 +233,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "distort": f"{ema_dist_for_log:.{5}f}",
                     "normal": f"{ema_normal_for_log:.{5}f}",
                     "conv": f"{ema_conv_for_log:.{5}f}",
+                    "bg": f"{ema_bg_for_log:.{5}f}",
                     "Points": f"{len(gaussians.get_xyz)}"
                 }
                 progress_bar.set_postfix(loss_dict)
@@ -185,6 +247,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/conv_loss', ema_conv_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/bg_loss', ema_bg_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/dynamic_threshold', dynamic_threshold, iteration)
                 
                 # 记录当前视角的loss
@@ -332,6 +395,58 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
         torch.cuda.empty_cache()
+
+def save_mask_visualization(mask, gt_image, iteration, output_dir, name="background_mask"):
+    """
+    保存掩码可视化图像，用于调试背景/前景分割
+    
+    Args:
+        mask: 掩码张量 [H, W]
+        gt_image: 原始图像 [3, H, W]
+        iteration: 当前迭代次数
+        output_dir: 输出目录
+        name: 图像名称前缀
+    """
+    # 创建输出目录
+    viz_dir = os.path.join(output_dir, "mask_viz")
+    os.makedirs(viz_dir, exist_ok=True)
+    
+    # 准备数据
+    mask_np = mask.detach().cpu().numpy()
+    image_np = gt_image.permute(1, 2, 0).detach().cpu().numpy()
+    
+    # 创建图像
+    plt.figure(figsize=(12, 5))
+    
+    # 原始图像
+    plt.subplot(1, 3, 1)
+    plt.imshow(image_np)
+    plt.title("原始图像")
+    plt.axis("off")
+    
+    # 掩码图像
+    plt.subplot(1, 3, 2)
+    plt.imshow(mask_np, cmap='gray')
+    plt.title(f"{name.replace('_', ' ').title()}")
+    plt.axis("off")
+    
+    # 叠加显示
+    plt.subplot(1, 3, 3)
+    overlay = np.copy(image_np)
+    mask_rgb = np.stack([mask_np] * 3, axis=2)  # 转为3通道
+    # 在掩码区域添加蓝色半透明覆盖
+    overlay = overlay * (1 - mask_rgb * 0.7) + mask_rgb * np.array([0, 0, 0.8]) * 0.7
+    plt.imshow(overlay)
+    plt.title("叠加显示")
+    plt.axis("off")
+    
+    # 保存图像
+    plt.tight_layout()
+    output_path = os.path.join(viz_dir, f"{name}_{iteration:06d}.png")
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+    
+    return output_path
 
 if __name__ == "__main__":
     # Set up command line argument parser

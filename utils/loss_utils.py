@@ -199,3 +199,68 @@ def depth_convergence_loss(render_depth, render_alpha):
     
     return loss
 
+def background_loss(render_alpha, gt_image, threshold=0.1, debug=False):
+    """
+    背景损失：强制透明背景区域的高斯不透明度趋近于0
+    L_bg = (1/hw) * ∑[A_i * (1-M_i)]
+    
+    Args:
+        render_alpha: 渲染的alpha通道 [1, H, W]
+        gt_image: 真实图像 [3, H, W]
+        threshold: 前景/背景阈值，默认0.1
+        debug: 是否返回调试信息
+        
+    Returns:
+        loss: 背景损失，如果debug=True则返回额外的调试信息
+    """
+    # 确保输入格式正确
+    if len(render_alpha.shape) != 3 or render_alpha.shape[0] != 1:
+        raise ValueError(f"Alpha图应形如 [1, H, W]，但得到 {render_alpha.shape}")
+    
+    # 计算真实图像的平均亮度
+    image_brightness = gt_image.mean(dim=0, keepdim=True)
+    
+    # 使用自适应阈值方法
+    # 首先尝试使用固定阈值
+    foreground_mask = (image_brightness > threshold).float()
+    bg_pixel_ratio = (1.0 - foreground_mask).sum() / (foreground_mask.shape[1] * foreground_mask.shape[2])
+    
+    # 准备调试信息字典
+    adaptive_threshold = None
+    
+    # 如果背景像素比例太高（大于95%），调整阈值以确保至少有5%的前景像素
+    if bg_pixel_ratio > 0.95:
+        # 使用图像亮度的百分位数作为自适应阈值
+        flat_brightness = image_brightness.view(-1)
+        sorted_brightness, _ = torch.sort(flat_brightness)
+        adaptive_idx = int(0.05 * len(sorted_brightness))  # 找到前5%亮度的临界点
+        adaptive_threshold = sorted_brightness[adaptive_idx]
+        
+        # 应用自适应阈值
+        foreground_mask = (image_brightness > adaptive_threshold).float()
+    
+    # 背景区域为 (1-M_i)
+    background_mask = 1.0 - foreground_mask
+    
+    # 计算背景区域的高斯不透明度损失
+    # L_bg = (1/hw) * ∑[A_i * (1-M_i)]
+    total_pixels = render_alpha.shape[1] * render_alpha.shape[2]
+    bg_loss = (render_alpha * background_mask).sum() / total_pixels
+    
+    if debug:
+        debug_info = {
+            'foreground_mask': foreground_mask,
+            'background_mask': background_mask,
+            'bg_alpha_avg': (render_alpha * background_mask).sum() / (background_mask.sum() + 1e-6),
+            'fg_alpha_avg': (render_alpha * foreground_mask).sum() / (foreground_mask.sum() + 1e-6),
+            'bg_pixel_ratio': background_mask.sum() / total_pixels
+        }
+        
+        # 如果使用了自适应阈值，添加到调试信息中
+        if adaptive_threshold is not None:
+            debug_info['adaptive_threshold'] = adaptive_threshold
+        
+        return bg_loss, debug_info
+    
+    return bg_loss
+
