@@ -152,3 +152,50 @@ def edge_aware_normal_loss(rendered_normal, gt_rgb, surf_normal, q=4, lambda_con
     
     return loss
 
+def depth_convergence_loss(render_depth, render_alpha):
+    """
+    深度收敛损失：强制相邻高斯基元深度接近
+    L_converge = ∑min(G_i, G_(i-1))⋅(d_i - d_(i-1))^2
+    
+    Args:
+        render_depth: 渲染深度图 [1, H, W]
+        render_alpha: 不透明度/权重图 [1, H, W]
+        
+    Returns:
+        loss: 深度收敛损失
+    """
+    # 确保输入格式正确
+    if len(render_depth.shape) != 3 or render_depth.shape[0] != 1:
+        raise ValueError(f"深度图应形如 [1, H, W]，但得到 {render_depth.shape}")
+    
+    # 计算深度的水平和垂直梯度
+    # 水平方向深度差
+    depth_grad_x = render_depth[:, :, 1:] - render_depth[:, :, :-1]
+    # 垂直方向深度差
+    depth_grad_y = render_depth[:, 1:, :] - render_depth[:, :-1, :]
+    
+    # 计算对应的权重（取相邻像素不透明度的最小值）
+    # 水平方向权重
+    weight_x = torch.min(render_alpha[:, :, 1:], render_alpha[:, :, :-1])
+    # 垂直方向权重
+    weight_y = torch.min(render_alpha[:, 1:, :], render_alpha[:, :-1, :])
+    
+    # 计算加权平方差
+    loss_x = (weight_x * depth_grad_x.pow(2)).sum()
+    loss_y = (weight_y * depth_grad_y.pow(2)).sum()
+    
+    # 防止除零问题（当像素总数为0时）
+    num_pixels_x = weight_x.sum()
+    num_pixels_y = weight_y.sum()
+    
+    # 取平均值
+    if num_pixels_x > 0:
+        loss_x = loss_x / num_pixels_x
+    if num_pixels_y > 0:
+        loss_y = loss_y / num_pixels_y
+    
+    # 组合两个方向的损失
+    loss = loss_x + loss_y
+    
+    return loss
+

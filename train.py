@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, compute_color_loss, edge_aware_normal_loss
+from utils.loss_utils import l1_loss, ssim, compute_color_loss, edge_aware_normal_loss, depth_convergence_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -48,6 +48,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
+    ema_conv_for_log = 0.0  # 用于记录深度收敛损失
     
     # 添加视角loss记录
     viewpoint_losses = {}  # 记录每个视角的loss
@@ -91,6 +92,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # regularization
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
+        # 深度收敛损失权重设置
+        lambda_conv = opt.lambda_depth_convergence if hasattr(opt, 'use_depth_convergence') and opt.use_depth_convergence and iteration > opt.conv_start_iter else 0.0
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal = render_pkg['rend_normal']
@@ -119,9 +122,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             normal_loss = torch.tensor(0.0, device='cuda')
             
         dist_loss = lambda_dist * (rend_dist).mean()
+        
+        # 计算深度收敛损失
+        if lambda_conv > 0:
+            # 获取渲染深度和渲染不透明度
+            surf_depth = render_pkg['surf_depth']
+            render_alpha = render_pkg['rend_alpha']
+            # 计算深度收敛损失
+            convergence_loss = lambda_conv * depth_convergence_loss(surf_depth, render_alpha)
+        else:
+            convergence_loss = torch.tensor(0.0, device='cuda')
 
         # 总损失
-        total_loss = loss + dist_loss + normal_loss
+        total_loss = loss + dist_loss + normal_loss + convergence_loss
         
         # 记录当前视角的loss
         viewpoint_name = viewpoint_cam.image_name
@@ -151,13 +164,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
-
+            ema_conv_for_log = 0.4 * convergence_loss.item() + 0.6 * ema_conv_for_log
 
             if iteration % 10 == 0:
                 loss_dict = {
                     "Loss": f"{ema_loss_for_log:.{5}f}",
                     "distort": f"{ema_dist_for_log:.{5}f}",
                     "normal": f"{ema_normal_for_log:.{5}f}",
+                    "conv": f"{ema_conv_for_log:.{5}f}",
                     "Points": f"{len(gaussians.get_xyz)}"
                 }
                 progress_bar.set_postfix(loss_dict)
@@ -170,6 +184,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if tb_writer is not None:
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/conv_loss', ema_conv_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/dynamic_threshold', dynamic_threshold, iteration)
                 
                 # 记录当前视角的loss

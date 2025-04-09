@@ -113,6 +113,11 @@ class OptimizationParams(ParamGroup):
         self.lambda_normal = 0.1
         self.opacity_cull = 0.05
         
+        # 深度收敛损失参数
+        self.use_depth_convergence = True  # 是否启用深度收敛损失
+        self.lambda_depth_convergence = 0.1  # 深度收敛损失权重
+        self.conv_start_iter = 3000  # 从哪个迭代开始应用深度收敛损失
+        
         # 其他参数保持不变
         self.use_edge_aware_normal = True
         self.edge_weight_exponent = 4.0
@@ -128,6 +133,9 @@ class OptimizationParams(ParamGroup):
             "lambda_dssim": "SSIM在颜色损失中的权重 (默认: 0.2)",
             "lambda_normal": "法线正则化强度 (默认: 0.05)",
             "lambda_dist": "深度失真正则化强度 (默认: 0.0)",
+            "use_depth_convergence": "启用深度收敛损失，强制相邻高斯基元深度接近，使表面更平滑",
+            "lambda_depth_convergence": "深度收敛损失权重 (默认: 0.01)",
+            "conv_start_iter": "从哪个迭代开始应用深度收敛损失 (默认: 3000)",
         }
         
         super().__init__(parser, "Optimization Parameters", descriptions=descriptions)
