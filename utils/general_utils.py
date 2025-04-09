@@ -170,8 +170,24 @@ def colormap(img, cmap='jet'):
     fig.colorbar(im, ax=ax)
     fig.tight_layout()
     fig.canvas.draw()
-    data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    
+    # 修复Matplotlib API变化
+    try:
+        # 新版本Matplotlib
+        data = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        data = data.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+        data = data[:, :, :3]  # 只保留RGB通道
+    except AttributeError:
+        try:
+            # 旧版本Matplotlib
+            data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        except AttributeError:
+            # 尝试其他可能的API
+            data = np.frombuffer(fig.canvas.tostring_argb(), dtype=np.uint8)
+            data = data.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+            data = data[:, :, 1:]  # 跳过alpha通道
+    
     img = torch.from_numpy(data / 255.).float().permute(2,0,1)
     plt.close()
     return img

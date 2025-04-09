@@ -86,34 +86,38 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 30_000
+        # 迭代次数
+        self.iterations = 14_000
+        
+        # 学习率参数
         self.position_lr_init = 0.00016
-        self.position_lr_final = 0.0000016
+        self.position_lr_final = 0.0000008
         self.position_lr_delay_mult = 0.01
-        self.position_lr_max_steps = 30_000
+        self.position_lr_max_steps = 14_000
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
+        
+        # 稠密化参数
+        self.densification_interval = 100
+        self.opacity_reset_interval = 1000
+        self.densify_from_iter = 500
+        self.densify_until_iter = 10_000
+        self.densify_grad_threshold = 0.0001
+        
+        # 正则化参数
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0005
         self.lambda_normal = 0.1
         self.opacity_cull = 0.05
         
-        # 边缘感知法向损失参数
-        self.use_edge_aware_normal = True  # 默认启用
-        self.edge_weight_exponent = 4.0     # 边缘权重指数q
-        self.lambda_consistency = 0.5       # 原始法线一致性权重
-        
-        # 多尺度SSIM参数
-        self.use_ms_ssim = True            # 默认启用
-
-        self.densification_interval = 100
-        self.opacity_reset_interval = 3000
-        self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
+        # 其他参数保持不变
+        self.use_edge_aware_normal = True
+        self.edge_weight_exponent = 4.0
+        self.lambda_consistency = 0.5
+        self.use_ms_ssim = True
         
         # 为参数添加帮助信息
         descriptions = {

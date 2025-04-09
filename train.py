@@ -48,6 +48,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
+    
+    # 添加视角loss记录
+    viewpoint_losses = {}  # 记录每个视角的loss
+    all_losses = []  # 记录所有loss
+    dynamic_threshold = 2.0  # 初始阈值
+    threshold_update_interval = 100  # 每100次迭代更新一次阈值
+    threshold_multiplier = 1.5  # 阈值倍数，高于平均loss的1.5倍视为高loss
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -116,6 +123,25 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # 总损失
         total_loss = loss + dist_loss + normal_loss
         
+        # 记录当前视角的loss
+        viewpoint_name = viewpoint_cam.image_name
+        current_loss = total_loss.item()
+        
+        # 更新视角平均loss
+        if viewpoint_name not in viewpoint_losses:
+            viewpoint_losses[viewpoint_name] = current_loss
+        else:
+            # 使用指数移动平均更新loss
+            viewpoint_losses[viewpoint_name] = 0.7 * viewpoint_losses[viewpoint_name] + 0.3 * current_loss
+        
+        # 更新动态阈值
+        all_losses.append(current_loss)
+        if iteration % threshold_update_interval == 0 and len(all_losses) > 0:
+            # 计算最近1000个loss的平均值
+            recent_losses = all_losses[-1000:] if len(all_losses) > 1000 else all_losses
+            avg_loss = sum(recent_losses) / len(recent_losses)
+            dynamic_threshold = avg_loss * threshold_multiplier
+        
         total_loss.backward()
 
         iter_end.record()
@@ -144,12 +170,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if tb_writer is not None:
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/dynamic_threshold', dynamic_threshold, iteration)
+                
+                # 记录当前视角的loss
+                tb_writer.add_scalar(f'viewpoint_losses/{viewpoint_name}', current_loss, iteration)
+                
+                # 每1000次迭代记录一次所有视角的平均loss
+                if iteration % 1000 == 0:
+                    # 找出loss最高的5个视角
+                    sorted_viewpoints = sorted(viewpoint_losses.items(), key=lambda x: x[1], reverse=True)
+                    top_5_viewpoints = sorted_viewpoints[:5]
+                    
+                    # 记录到TensorBoard
+                    for i, (name, loss_val) in enumerate(top_5_viewpoints):
+                        tb_writer.add_scalar(f'top_loss_viewpoints/rank_{i+1}', loss_val, iteration)
+                        tb_writer.add_text(f'top_loss_viewpoints/name_{i+1}', name, iteration)
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
-
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -298,13 +338,7 @@ if __name__ == "__main__":
     
     print("Optimizing " + args.model_path)
     
-    # 打印增强功能状态
-    if hasattr(args, 'use_edge_aware_normal') and args.use_edge_aware_normal:
-        print("启用边缘感知法向损失: 边缘权重指数={}, 一致性权重={}".format(
-            args.edge_weight_exponent, args.lambda_consistency))
-    if hasattr(args, 'use_ms_ssim') and args.use_ms_ssim:
-        print("启用多尺度SSIM损失")
-
+    
     # Initialize system state (RNG)
     safe_state(args.quiet)
 
