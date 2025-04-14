@@ -127,3 +127,6 @@ python point_cloud_clipper.py --data_dir ./colmap_output --images_dir ./transpar
 ```bash
 python point_cloud_clipper.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ --output_ply ./output/model.ply
 ``` 
+
+
+使用切割线来直接创建表面点云

@@ -81,28 +81,6 @@ def generate_uniform_point_cloud(bounds_min, bounds_max, num_points=1000000):
     
     return points
 
-def alpha_threshold_mask(image_path, threshold=0.5):
-    """
-    根据透明通道生成二值掩码
-    
-    参数:
-    - image_path: 图像路径
-    - threshold: 透明度阈值
-    """
-    try:
-        image = Image.open(image_path).convert('RGBA')
-        alpha = np.array(image)[:, :, 3]
-        
-        # 二值化透明度通道
-        mask = alpha > (threshold * 255)
-        # 可选：使用形态学操作改善掩码质量
-        mask = ndimage.binary_erosion(mask, structure=np.ones((3, 3)), iterations=1)
-        
-        return mask
-    except Exception as e:
-        print(f"处理图像 {image_path} 时出错: {e}")
-        return None
-
 def project_points_batch(points, R, T, intrinsics, width, height):
     """
     批量将3D点投影到图像平面
@@ -197,16 +175,16 @@ def project_points_batch(points, R, T, intrinsics, width, height):
 
 def process_camera(args):
     """
-    处理单个相机视角的点云得分
+    处理单个相机视角的点云，直接标记前景点和背景点
     用于多进程并行处理
     
     返回:
-    - scores: 根据可见性的得分数组，前景+1，背景-1
+    - visibility: 点的可见性标记，True表示前景点，False表示背景点
     """
     cam_idx, extr, intr, points, image_path, _ = args
     
-    # 初始化得分数组
-    scores = np.zeros(len(points), dtype=np.int32)
+    # 初始化可见性数组，默认为None（未被观测到）
+    visibility = np.full(len(points), None, dtype=object)
     
     # 获取相机参数
     R = qvec2rotmat(extr.qvec)
@@ -214,7 +192,7 @@ def process_camera(args):
     width, height = intr.width, intr.height
     
     try:
-        # 直接读取图像的alpha通道，不做阈值处理
+        # 读取图像的alpha通道
         image = Image.open(image_path).convert('RGBA')
         alpha = np.array(image)[:, :, 3]
         
@@ -222,30 +200,30 @@ def process_camera(args):
         pixels, valid_mask = project_points_batch(points, R, T, intr, width, height)
         
         if not np.any(valid_mask):
-            return scores
+            return visibility
         
         # 获取有效点的像素坐标
         valid_pixels = pixels[valid_mask]
         
-        # 更新有效点的得分
+        # 更新有效点的可见性标记
         valid_indices = np.where(valid_mask)[0]
         for i, (u, v) in enumerate(valid_pixels):
             # 添加边界检查，确保u和v不超过图像大小
             if 0 <= v < alpha.shape[0] and 0 <= u < alpha.shape[1]:
                 idx = valid_indices[i]
                 if alpha[v, u] > 0:  # 非透明区域(前景)
-                    scores[idx] = 1
+                    visibility[idx] = True
                 else:  # 透明区域(背景)
-                    scores[idx] = -1
+                    visibility[idx] = False
         
-        return scores
+        return visibility
     except Exception as e:
         print(f"处理图像 {image_path} 时出错: {e}")
-        return scores
+        return visibility
 
-def calculate_points_scores_parallel(points, cam_extrinsics, cam_intrinsics, images_dir, batch_size=1000, num_workers=None):
+def calculate_points_visibility_parallel(points, cam_extrinsics, cam_intrinsics, images_dir, batch_size=1000, num_workers=None):
     """
-    并行计算点云的累积得分
+    并行计算点云的可见性
     
     参数:
     - points: 点云坐标 (N, 3)
@@ -256,13 +234,13 @@ def calculate_points_scores_parallel(points, cam_extrinsics, cam_intrinsics, ima
     - num_workers: 并行工作进程数，默认为CPU核心数减1
     
     返回:
-    - point_scores: 每个点的累积得分 (N,)
+    - foreground_mask: 前景点的掩码，True表示是前景点
     """
     if num_workers is None:
         num_workers = max(1, cpu_count() - 1)
     
     start_time = time.time()
-    print(f"使用 {num_workers} 个进程并行计算点云得分...")
+    print(f"使用 {num_workers} 个进程并行计算点云可见性...")
     
     # 准备相机参数列表
     camera_args = []
@@ -282,47 +260,34 @@ def calculate_points_scores_parallel(points, cam_extrinsics, cam_intrinsics, ima
         results = list(tqdm(
             pool.imap(process_camera, camera_args),
             total=len(camera_args),
-            desc="计算点云得分"
+            desc="计算点云可见性"
         ))
     
-    # 合并结果：累加所有相机的得分
-    point_scores = np.sum(results, axis=0)
+    # 初始化前景点掩码，默认都是False
+    foreground_mask = np.zeros(len(points), dtype=bool)
+    
+    # 合并结果：如果任意一个相机将点标记为前景，且没有任何相机将其标记为背景，则认为是前景点
+    for point_idx in range(len(points)):
+        is_foreground = False
+        is_background = False
+        
+        for camera_result in results:
+            visibility = camera_result[point_idx]
+            
+            if visibility is False:  # 明确标记为背景
+                is_background = True
+                break  # 一旦被标记为背景，就不再考虑该点
+            elif visibility is True:  # 明确标记为前景
+                is_foreground = True
+        
+        # 只有被至少一个相机标记为前景，且没有任何相机将其标记为背景，才保留
+        foreground_mask[point_idx] = is_foreground and not is_background
     
     elapsed_time = time.time() - start_time
-    print(f"点云得分计算完成，耗时 {elapsed_time:.2f} 秒")
-    print(f"得分范围: 最小 {np.min(point_scores)}, 最大 {np.max(point_scores)}")
+    print(f"点云可见性计算完成，耗时 {elapsed_time:.2f} 秒")
+    print(f"前景点数量: {np.sum(foreground_mask)}/{len(points)}")
     
-    return point_scores
-
-def colorize_points_by_score(points, scores):
-    """
-    根据得分为点云着色，使用单一颜色的深浅
-    
-    参数:
-    - points: 点云坐标 (N, 3)
-    - scores: 点云得分 (N,)
-    
-    返回:
-    - colors: 点云颜色 (N, 3)，RGB格式，范围0-255
-    """
-    # 找出得分范围
-    min_score = np.min(scores)
-    max_score = np.max(scores)
-    print(f"点云得分范围: {min_score} 到 {max_score}")
-    
-    # 归一化得分到[0, 1]区间
-    score_range = max_score - min_score
-    if score_range == 0:
-        normalized_scores = np.ones_like(scores, dtype=float) * 0.5
-    else:
-        normalized_scores = (scores - min_score) / score_range
-    
-    # 使用单一颜色（这里选择蓝色）的深浅来表示得分
-    # 得分高的点颜色深，得分低的点颜色浅
-    colors = np.zeros((len(scores), 3))
-    colors[:, 2] = normalized_scores  # 设置蓝色通道，得分越高，蓝色越深
-    
-    return colors
+    return foreground_mask
 
 def save_point_cloud(points, colors, filename):
     """
@@ -335,53 +300,21 @@ def save_point_cloud(points, colors, filename):
     o3d.io.write_point_cloud(filename, pcd)
     print(f"点云已保存至 {filename}")
 
-def estimate_bounds_from_cameras(cam_extrinsics, scale_factor=1.5):
-    """
-    根据相机位置估计场景边界
-    
-    参数:
-    - cam_extrinsics: 相机外参
-    - scale_factor: 边界缩放因子，用于扩大边界范围
-    
-    返回:
-    - bounds_min: 边界框最小值 [x_min, y_min, z_min]
-    - bounds_max: 边界框最大值 [x_max, y_max, z_max]
-    """
-    # 提取所有相机的位置
-    camera_positions = []
-    for _, extr in cam_extrinsics.items():
-        R = qvec2rotmat(extr.qvec)
-        T = np.array(extr.tvec)
-        # 相机中心是 -R^T * T
-        camera_center = -R.T @ T
-        camera_positions.append(camera_center)
-    
-    camera_positions = np.array(camera_positions)
-    
-    # 计算边界框
-    center = np.mean(camera_positions, axis=0)
-    distances = np.linalg.norm(camera_positions - center, axis=1)
-    max_dist = np.max(distances)
-    
-    # 创建一个立方体边界框，边长为相机距离的几倍
-    bounds_size = max_dist * scale_factor
-    bounds_min = center - bounds_size
-    bounds_max = center + bounds_size
-    
-    return bounds_min, bounds_max
-
 def main():
     parser = argparse.ArgumentParser(description="使用COLMAP相机参数和图像透明度对点云进行评分和可视化")
     parser.add_argument('--data_dir', type=str, required=True, help='COLMAP数据目录')
     parser.add_argument('--images_dir', type=str, help='图像目录，默认为data_dir/images')
-    parser.add_argument('--output_ply', type=str, default='scored_pointcloud.ply', help='输出点云文件名')
+    parser.add_argument('--output_ply', type=str, default='model.ply', help='输出点云文件名')
     parser.add_argument('--dense_points', type=int, default=1000000, help='生成的均匀密集点云点数')
     parser.add_argument('--num_workers', type=int, default=None, help='并行工作进程数，默认为CPU核心数减1')
     parser.add_argument('--batch_size', type=int, default=1000, help='批处理大小')
-    parser.add_argument('--scene_scale', type=float, default=1.5, help='场景边界框缩放因子')
-    parser.add_argument('--bounds_min', type=str, help='手动指定边界框最小值，格式为"x,y,z"')
-    parser.add_argument('--bounds_max', type=str, help='手动指定边界框最大值，格式为"x,y,z"')
-    parser.add_argument('--keep_percentage', type=float, default=0.1, help='保留得分最高的点云百分比，默认50%')
+    parser.add_argument('--volume_x', type=float, default=4, help='体积X轴长度')
+    parser.add_argument('--volume_y', type=float, default=2, help='体积Y轴长度')
+    parser.add_argument('--volume_z', type=float, default=1.5, help='体积Z轴长度')
+    parser.add_argument('--center_offset_x', type=float, default=-0.8, help='中心点X轴偏移量')
+    parser.add_argument('--center_offset_y', type=float, default=0.2, help='中心点Y轴偏移量')
+    parser.add_argument('--center_offset_z', type=float, default=0.3, help='中心点Z轴偏移量')
+    parser.add_argument('--no_clip', action='store_true', help='不进行裁切，只生成点云')
     
     args = parser.parse_args()
     
@@ -395,62 +328,67 @@ def main():
         print("无法加载COLMAP相机参数，退出程序。")
         return
     
-    # 确定边界
-    if args.bounds_min and args.bounds_max:
-        # 使用用户指定的边界
-        try:
-            bounds_min = np.array([float(x) for x in args.bounds_min.split(',')])
-            bounds_max = np.array([float(x) for x in args.bounds_max.split(',')])
-            print(f"使用用户指定的边界: {bounds_min} 到 {bounds_max}")
-        except:
-            print("无法解析用户指定的边界，将使用估计边界。")
-            bounds_min, bounds_max = None, None
-    else:
-        bounds_min, bounds_max = None, None
+    # 获取相机中心位置(用于定位人像)
+    camera_positions = []
+    for _, extr in cam_extrinsics.items():
+        R = qvec2rotmat(extr.qvec)
+        T = np.array(extr.tvec)
+        camera_center = -R.T @ T
+        camera_positions.append(camera_center)
     
-    # 如果没有指定边界或解析失败，使用相机位置估计边界
-    if bounds_min is None or bounds_max is None:
-        # 使用相机位置估计场景边界
-        bounds_min, bounds_max = estimate_bounds_from_cameras(cam_extrinsics, args.scene_scale)
-        print(f"使用相机位置估计场景边界: {bounds_min} 到 {bounds_max}")
+    center = np.mean(np.array(camera_positions), axis=0)
+    
+    # 应用中心点偏移
+    center[0] += args.center_offset_x
+    center[1] += args.center_offset_y
+    center[2] += args.center_offset_z
+    
+    # 设置以中心点为基准的体积边界(x/y/z)
+    half_x = args.volume_x / 2
+    half_y = args.volume_y / 2
+    half_z = args.volume_z / 2
+    
+    # 创建长方形边界
+    bounds_min = np.array([center[0] - half_x, center[1] - half_y, center[2] - half_z])
+    bounds_max = np.array([center[0] + half_x, center[1] + half_y, center[2] + half_z])
+    
+    print(f"使用体积边界:")
+    print(f"  中心点: [{center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}] (应用偏移量: [{args.center_offset_x:.4f}, {args.center_offset_y:.4f}, {args.center_offset_z:.4f}])")
+    print(f"  尺寸: {args.volume_x:.2f} x {args.volume_y:.2f} x {args.volume_z:.2f}")
+    print(f"  X轴: {bounds_min[0]:.4f} 到 {bounds_max[0]:.4f}, 宽度: {bounds_max[0] - bounds_min[0]:.4f}")
+    print(f"  Y轴: {bounds_min[1]:.4f} 到 {bounds_max[1]:.4f}, 高度: {bounds_max[1] - bounds_min[1]:.4f}")
+    print(f"  Z轴: {bounds_min[2]:.4f} 到 {bounds_max[2]:.4f}, 深度: {bounds_max[2] - bounds_min[2]:.4f}")
     
     # 生成均匀分布的密集点云
     print(f"生成均匀分布的密集点云，点数: {args.dense_points}")
     input_points = generate_uniform_point_cloud(bounds_min, bounds_max, args.dense_points)
     
-    print(f"输入点云大小: {len(input_points)} 个点")
-    
-    # 计算点云得分(不再计算可见性掩码)
-    point_scores = calculate_points_scores_parallel(
-        input_points, cam_extrinsics, cam_intrinsics, args.images_dir, 
-        args.batch_size, args.num_workers
-    )
-    
-    # 筛选得分前N%的点
-    keep_percentage = args.keep_percentage
-    if keep_percentage < 100:
-        # 计算分数阈值（保留前N%的点）
-        score_threshold = np.percentile(point_scores, 100 - keep_percentage)
-        # 选择得分高于阈值的点
-        high_score_mask = point_scores >= score_threshold
-        # 筛选点和对应的分数
-        filtered_points = input_points[high_score_mask]
-        filtered_scores = point_scores[high_score_mask]
-        
-        print(f"保留得分最高的 {keep_percentage}% 的点，阈值为 {score_threshold}")
-        print(f"筛选后点云包含 {len(filtered_points)} 个点，原始点云为 {len(input_points)} 个点")
+    if args.no_clip:
+        # 不进行裁切，直接保存全部点云
+        print("跳过裁切步骤，保存所有生成的点云")
+        # 为所有点设置统一颜色（蓝色）
+        colors = np.zeros((len(input_points), 3))
+        colors[:, 2] = 1.0  # 设置蓝色通道
+        save_point_cloud(input_points, colors * 255, args.output_ply)
+        print(f"原始点云已保存至 {args.output_ply}")
     else:
-        filtered_points = input_points
-        filtered_scores = point_scores
-    
-    # 根据得分为点云着色
-    colors = colorize_points_by_score(filtered_points, filtered_scores)
-    
-    # 保存带颜色的点云
-    save_point_cloud(filtered_points, colors * 255, args.output_ply)
-    print(f"带得分颜色的点云已保存至 {args.output_ply}")
+        # 计算点云可见性
+        foreground_mask = calculate_points_visibility_parallel(input_points, cam_extrinsics, cam_intrinsics, args.images_dir, args.batch_size, args.num_workers)
+        
+        # 过滤点云
+        filtered_points = input_points[foreground_mask]
+        # 为点云设置统一颜色（蓝色）
+        colors = np.zeros((len(filtered_points), 3))
+        colors[:, 2] = 1.0  # 设置蓝色通道
+        
+        # 保存过滤后的点云
+        save_point_cloud(filtered_points, colors * 255, args.output_ply)
+        print(f"过滤后的点云已保存至 {args.output_ply}")
     
     print("点云处理完成！")
 
 if __name__ == "__main__":
-    main() 
+    main()
+
+
+    
