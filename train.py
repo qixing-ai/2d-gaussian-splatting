@@ -1,0 +1,505 @@
+import os
+import torch
+from random import randint
+from utils.loss_utils import l1_loss, ssim, compute_color_loss, edge_aware_normal_loss, depth_convergence_loss
+from gaussian_renderer import render, network_gui
+import sys
+from scene import Scene, GaussianModel
+from utils.general_utils import safe_state
+import uuid
+from tqdm import tqdm
+from utils.image_utils import psnr, render_net_image, colormap
+from argparse import ArgumentParser, Namespace
+from arguments import ModelParams, PipelineParams, OptimizationParams
+import matplotlib.pyplot as plt
+import numpy as np
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    TENSORBOARD_FOUND = True
+except ImportError:
+    TENSORBOARD_FOUND = False
+
+# 导入ply可视化工具
+from utils.tensorboard_utils import add_ply_to_tensorboard
+
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
+    first_iter = 0
+    
+    # 检查并打印已启用的背景处理和优化功能
+    print("\n======= 伪影优化功能检查 =======")
+    if hasattr(opt, 'set_background_opacity_to_zero') and opt.set_background_opacity_to_zero:
+        print("✓ 背景点不透明度清零：已启用")
+        print(f"  - 开始迭代：{opt.bg_start_iter}")
+        print("  - 识别阈值：0.00001 (已优化)")
+        print("  - 剪枝策略：增强 (已优化)")
+    else:
+        print("✗ 背景点不透明度清零：未启用")
+        print("  警告：为减少伪影，建议启用背景点不透明度清零功能")
+        print("  添加参数：--set_background_opacity_to_zero True --bg_start_iter 1000")
+    
+    # 打印剪枝和优化策略信息
+    print("\n剪枝策略概述：")
+    print("  - 即时剪枝：不透明度 < 0.0005 的点")
+    print("  - 额外剪枝：每100次迭代，不透明度 < 0.0002 的点")
+    print("  - 全局剪枝：每500次迭代，不透明度 < 0.003 的点")
+    print("  - 密集化剪枝：根据梯度和不透明度动态执行")
+    print("==============================\n")
+
+    tb_writer = prepare_output_and_logger(dataset)
+    gaussians = GaussianModel(dataset.sh_degree)
+    scene = Scene(dataset, gaussians)
+    gaussians.training_setup(opt)
+    if checkpoint:
+        (model_params, first_iter) = torch.load(checkpoint)
+        gaussians.restore(model_params, opt)
+
+    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+
+    iter_start = torch.cuda.Event(enable_timing = True)
+    iter_end = torch.cuda.Event(enable_timing = True)
+
+    viewpoint_stack = None
+    ema_loss_for_log = 0.0
+    ema_dist_for_log = 0.0
+    ema_normal_for_log = 0.0
+    ema_conv_for_log = 0.0  # 用于记录深度收敛损失
+    
+    # 添加视角loss记录
+    viewpoint_losses = {}  # 记录每个视角的loss
+    all_losses = []  # 记录所有loss
+    dynamic_threshold = 2.0  # 初始阈值
+    threshold_update_interval = 100  # 每100次迭代更新一次阈值
+    threshold_multiplier = 1.5  # 阈值倍数，高于平均loss的1.5倍视为高loss
+
+    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+    first_iter += 1
+    for iteration in range(first_iter, opt.iterations + 1):        
+
+        iter_start.record()
+
+        gaussians.update_learning_rate(iteration)
+
+        # Every 1000 its we increase the levels of SH up to a maximum degree
+        if iteration % 1000 == 0:
+            gaussians.oneupSHdegree()
+
+        # Pick a random Camera
+        if not viewpoint_stack:
+            viewpoint_stack = scene.getTrainCameras().copy()
+        viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+        
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
+        
+        gt_image = viewpoint_cam.original_image.cuda()
+        
+        # 颜色损失计算
+        Ll1 = l1_loss(image, gt_image)
+        
+        # 检查是否启用了多尺度SSIM
+        if hasattr(opt, 'use_ms_ssim') and opt.use_ms_ssim:
+            loss = compute_color_loss(image, gt_image, lambda_dssim=opt.lambda_dssim, use_ms_ssim=True)
+        else:
+            # 原始颜色损失计算
+            loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+        
+        # regularization
+        lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
+        lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
+        # 深度收敛损失权重设置
+        lambda_conv = opt.lambda_depth_convergence if hasattr(opt, 'use_depth_convergence') and opt.use_depth_convergence and iteration > opt.conv_start_iter else 0.0
+        # 背景损失权重设置
+        lambda_bg = 0.0
+
+        rend_dist = render_pkg["rend_dist"]
+        rend_normal = render_pkg['rend_normal']
+        surf_normal = render_pkg['surf_normal']
+        
+        # 法线损失计算
+        if lambda_normal > 0:
+            # 检查是否启用了边缘感知法向损失
+            if hasattr(opt, 'use_edge_aware_normal') and opt.use_edge_aware_normal:
+                # 使用边缘感知法向损失
+                edge_weight_exp = opt.edge_weight_exponent if hasattr(opt, 'edge_weight_exponent') else 4.0
+                lambda_cons = opt.lambda_consistency if hasattr(opt, 'lambda_consistency') else 0.5
+                
+                normal_loss = lambda_normal * edge_aware_normal_loss(
+                    rendered_normal=rend_normal,
+                    gt_rgb=gt_image,
+                    surf_normal=surf_normal,
+                    q=edge_weight_exp,
+                    lambda_consistency=lambda_cons
+                )
+            else:
+                # 使用原始法线一致性损失
+                normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+                normal_loss = lambda_normal * (normal_error).mean()
+        else:
+            normal_loss = torch.tensor(0.0, device='cuda')
+            
+        dist_loss = lambda_dist * (rend_dist).mean()
+        
+        # 计算深度收敛损失
+        if lambda_conv > 0:
+            # 获取渲染深度和渲染不透明度
+            surf_depth = render_pkg['surf_depth']
+            render_alpha = render_pkg['rend_alpha']
+            # 计算深度收敛损失
+            convergence_loss = lambda_conv * depth_convergence_loss(surf_depth, render_alpha)
+        else:
+            convergence_loss = torch.tensor(0.0, device='cuda')
+
+        # 总损失
+        total_loss = loss + dist_loss + normal_loss + convergence_loss
+        
+        # 记录当前视角的loss
+        viewpoint_name = viewpoint_cam.image_name
+        current_loss = total_loss.item()
+        
+        # 更新视角平均loss
+        if viewpoint_name not in viewpoint_losses:
+            viewpoint_losses[viewpoint_name] = current_loss
+        else:
+            # 使用指数移动平均更新loss
+            viewpoint_losses[viewpoint_name] = 0.7 * viewpoint_losses[viewpoint_name] + 0.3 * current_loss
+        
+        # 更新动态阈值
+        all_losses.append(current_loss)
+        if iteration % threshold_update_interval == 0 and len(all_losses) > 0:
+            # 计算最近1000个loss的平均值
+            recent_losses = all_losses[-1000:] if len(all_losses) > 1000 else all_losses
+            avg_loss = sum(recent_losses) / len(recent_losses)
+            dynamic_threshold = avg_loss * threshold_multiplier
+        
+        total_loss.backward()
+
+        iter_end.record()
+
+        with torch.no_grad():
+            # Progress bar
+            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
+            ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
+            ema_conv_for_log = 0.4 * convergence_loss.item() + 0.6 * ema_conv_for_log
+
+            if iteration % 10 == 0:
+                loss_dict = {
+                    "Loss": f"{ema_loss_for_log:.{5}f}",
+                    "distort": f"{ema_dist_for_log:.{5}f}",
+                    "normal": f"{ema_normal_for_log:.{5}f}",
+                    "conv": f"{ema_conv_for_log:.{5}f}",
+                    "Points": f"{len(gaussians.get_xyz)}"
+                }
+                progress_bar.set_postfix(loss_dict)
+
+                progress_bar.update(10)
+            if iteration == opt.iterations:
+                progress_bar.close()
+
+            # Log and save
+            if tb_writer is not None:
+                tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/conv_loss', ema_conv_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/dynamic_threshold', dynamic_threshold, iteration)
+                
+                # 记录当前视角的loss
+                tb_writer.add_scalar(f'viewpoint_losses/{viewpoint_name}', current_loss, iteration)
+                
+                # 每1000次迭代记录一次所有视角的平均loss
+                if iteration % 1000 == 0:
+                    # 找出loss最高的5个视角
+                    sorted_viewpoints = sorted(viewpoint_losses.items(), key=lambda x: x[1], reverse=True)
+                    top_5_viewpoints = sorted_viewpoints[:5]
+                    
+                    # 记录到TensorBoard
+                    for i, (name, loss_val) in enumerate(top_5_viewpoints):
+                        tb_writer.add_scalar(f'top_loss_viewpoints/rank_{i+1}', loss_val, iteration)
+                        tb_writer.add_text(f'top_loss_viewpoints/name_{i+1}', name, iteration)
+
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            if (iteration in saving_iterations):
+                print("\n[ITER {}] Saving Gaussians".format(iteration))
+                scene.save(iteration)
+                
+                # 在TensorBoard中可视化保存的PLY文件
+                if tb_writer is not None:
+                    # 构建PLY文件路径
+                    ply_path = os.path.join(dataset.model_path, "point_cloud", f"iteration_{iteration}", "point_cloud.ply")
+                    # 将PLY文件添加到TensorBoard
+                    add_ply_to_tensorboard(tb_writer, f"点云/迭代_{iteration}", ply_path, global_step=iteration)
+
+            # Densification
+            if iteration < opt.densify_until_iter:
+                # 1. 首先收集梯度统计
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+                
+                # 2. 然后设置背景点透明度为0（只从2000步开始）
+                if hasattr(opt, 'set_background_opacity_to_zero') and opt.set_background_opacity_to_zero and iteration > opt.bg_start_iter and iteration >= 2000:
+                    # 检查图像是否有alpha通道
+                    has_alpha = gt_image.shape[0] > 3
+                    if has_alpha:
+                        # 使用alpha通道作为前景掩码
+                        foreground_mask = gt_image[3:4]
+                        # 将背景区域高斯点不透明度直接设为0
+                        success, num_points = gaussians.set_background_opacity_to_zero(foreground_mask, visibility_filter)
+                        
+                        # 每100次迭代打印一次处理信息
+                        if iteration % 100 == 0 and success:
+                            print(f"  [背景点处理] 迭代: {iteration}")
+                            print(f"  已将 {num_points} 个背景高斯点不透明度设为0")
+                
+                # 3. 执行统一的裁剪策略（保持原始方式）
+                # 每100次迭代执行一次裁剪
+                if iteration % 100 == 0:
+                    # 使用单一的阈值，适当折中各种阈值
+                    transparent_mask = (gaussians.get_opacity < 0.0002).squeeze()
+                    if transparent_mask.any():
+                        # 计算要删除的点数和总点数
+                        points_to_delete = transparent_mask.sum().item()
+                        total_points = gaussians.get_xyz.shape[0]
+                        
+                        # 使用原始的裁剪方式（带5%限制）
+                        if points_to_delete > 0.05 * total_points:
+                            # 只删除不透明度最低的点
+                            opacities = gaussians.get_opacity.squeeze()
+                            values, indices = torch.sort(opacities)
+                            max_to_delete = int(0.05 * total_points)
+                            indices_to_delete = indices[:max_to_delete]
+                            delete_mask = torch.zeros_like(opacities, dtype=torch.bool)
+                            delete_mask[indices_to_delete] = True
+                            
+                            gaussians.prune_points(delete_mask)
+                            print(f"  [透明点剪枝] 迭代: {iteration}")
+                            print(f"  原计划删除 {points_to_delete} 点，实际删除 {max_to_delete} 点")
+                        else:
+                            gaussians.prune_points(transparent_mask)
+                            print(f"  [透明点剪枝] 迭代: {iteration}")
+                            print(f"  已删除 {transparent_mask.sum().item()} 个透明点")
+
+                # 4. 执行稠密化操作（保持原始方式）
+                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    # 恢复使用原始的密集化方法
+                    # 计算梯度
+                    grads = gaussians.xyz_gradient_accum / gaussians.denom
+                    grads[grads.isnan()] = 0.0
+                    
+                    # 裁剪低不透明度的点
+                    opacity_mask = (gaussians.get_opacity < opt.opacity_cull).squeeze()
+                    gaussians.prune_points(opacity_mask)
+                    
+                    # 执行稠密化操作
+                    gaussians.densify_and_clone(grads, opt.densify_grad_threshold, scene.cameras_extent)
+                    gaussians.densify_and_split(grads, opt.densify_grad_threshold, scene.cameras_extent)
+                
+                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                    gaussians.reset_opacity()
+
+            # Optimizer step
+            if iteration < opt.iterations:
+                gaussians.optimizer.step()
+                gaussians.optimizer.zero_grad(set_to_none = True)
+
+            if (iteration in checkpoint_iterations):
+                print("\n[ITER {}] Saving Checkpoint".format(iteration))
+                torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
+
+        with torch.no_grad():        
+            if network_gui.conn == None:
+                network_gui.try_connect(dataset.render_items)
+            while network_gui.conn != None:
+                try:
+                    net_image_bytes = None
+                    custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
+                    if custom_cam != None:
+                        render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)   
+                        net_image = render_net_image(render_pkg, dataset.render_items, render_mode, custom_cam)
+                        net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
+                    metrics_dict = {
+                        "#": gaussians.get_opacity.shape[0],
+                        "loss": ema_loss_for_log
+                        # Add more metrics as needed
+                    }
+                    # Send the data
+                    network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
+                    if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
+                        break
+                except Exception as e:
+                    # raise e
+                    network_gui.conn = None
+
+def prepare_output_and_logger(args):    
+    if not args.model_path:
+        if os.getenv('OAR_JOB_ID'):
+            unique_str=os.getenv('OAR_JOB_ID')
+        else:
+            unique_str = str(uuid.uuid4())
+        args.model_path = os.path.join("./output/", unique_str[0:10])
+        
+    # Set up output folder
+    print("Output folder: {}".format(args.model_path))
+    os.makedirs(args.model_path, exist_ok = True)
+    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
+        cfg_log_f.write(str(Namespace(**vars(args))))
+
+    # Create Tensorboard writer
+    tb_writer = None
+    if TENSORBOARD_FOUND:
+        tb_writer = SummaryWriter(args.model_path)
+    else:
+        print("Tensorboard not available: not logging progress")
+    return tb_writer
+
+@torch.no_grad()
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+    if tb_writer:
+        tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
+        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
+        tb_writer.add_scalar('iter_time', elapsed, iteration)
+        tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+
+    # Report test and samples of training set
+    if iteration in testing_iterations:
+        torch.cuda.empty_cache()
+        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
+                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+
+        for config in validation_configs:
+            if config['cameras'] and len(config['cameras']) > 0:
+                l1_test = 0.0
+                psnr_test = 0.0
+                for idx, viewpoint in enumerate(config['cameras']):
+                    render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
+                    image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
+                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    if tb_writer and (idx < 5):
+                        from utils.general_utils import colormap
+                        depth = render_pkg["surf_depth"]
+                        norm = depth.max()
+                        depth = depth / norm
+                        depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
+                        tb_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
+                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+
+                        try:
+                            rend_alpha = render_pkg['rend_alpha']
+                            rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
+                            surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
+                            tb_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
+                            tb_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
+                            tb_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
+
+                            rend_dist = render_pkg["rend_dist"]
+                            rend_dist = colormap(rend_dist.cpu().numpy()[0])
+                            tb_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
+                        except:
+                            pass
+
+                        if iteration == testing_iterations[0]:
+                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+
+                    l1_test += l1_loss(image, gt_image).mean().double()
+                    psnr_test += psnr(image, gt_image).mean().double()
+
+                psnr_test /= len(config['cameras'])
+                l1_test /= len(config['cameras'])
+                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                if tb_writer:
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+
+        torch.cuda.empty_cache()
+
+def save_mask_visualization(mask, gt_image, iteration, output_dir, name="background_mask"):
+    """
+    保存掩码可视化图像，用于调试背景/前景分割
+    
+    Args:
+        mask: 掩码张量 [H, W]
+        gt_image: 原始图像 [3, H, W]
+        iteration: 当前迭代次数
+        output_dir: 输出目录
+        name: 图像名称前缀
+    """
+    # 配置matplotlib支持中文
+    import matplotlib
+    # 使用更通用的字体，避免找不到特定字体的警告
+    matplotlib.rcParams['font.family'] = ['DejaVu Sans', 'sans-serif']
+    matplotlib.rcParams['axes.unicode_minus'] = False
+    
+    # 创建输出目录
+    viz_dir = os.path.join(output_dir, "mask_viz")
+    os.makedirs(viz_dir, exist_ok=True)
+    
+    # 准备数据
+    mask_np = mask.detach().cpu().numpy()
+    image_np = gt_image.permute(1, 2, 0).detach().cpu().numpy()
+    
+    # 创建图像
+    plt.figure(figsize=(12, 5))
+    
+    # 原始图像
+    plt.subplot(1, 3, 1)
+    plt.imshow(image_np)
+    plt.title("Original Image")
+    plt.axis("off")
+    
+    # 掩码图像
+    plt.subplot(1, 3, 2)
+    plt.imshow(mask_np, cmap='gray')
+    plt.title(f"{name.replace('_', ' ').title()}")
+    plt.axis("off")
+    
+    # 叠加显示
+    plt.subplot(1, 3, 3)
+    overlay = np.copy(image_np)
+    mask_rgb = np.stack([mask_np] * 3, axis=2)  # 转为3通道
+    # 在掩码区域添加蓝色半透明覆盖
+    overlay = overlay * (1 - mask_rgb * 0.7) + mask_rgb * np.array([0, 0, 0.8]) * 0.7
+    plt.imshow(overlay)
+    plt.title("Overlay")
+    plt.axis("off")
+    
+    # 保存图像
+    plt.tight_layout()
+    output_path = os.path.join(viz_dir, f"{name}_{iteration:06d}.png")
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+    
+    return output_path
+
+if __name__ == "__main__":
+    # Set up command line argument parser
+    parser = ArgumentParser(description="Training script parameters")
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
+    parser.add_argument('--ip', type=str, default="127.0.0.1")
+    parser.add_argument('--port', type=int, default=6009)
+    parser.add_argument('--detect_anomaly', action='store_true', default=False)
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    # 每1000次迭代保存一次点云并在TensorBoard中可视化
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[i for i in range(1000, 30001, 1000)])
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--start_checkpoint", type=str, default = None)
+    
+    args = parser.parse_args(sys.argv[1:])
+    args.save_iterations.append(args.iterations)
+    
+    print("Optimizing " + args.model_path)
+    
+    
+    # Initialize system state (RNG)
+    safe_state(args.quiet)
+
+    # Start GUI server, configure and run training
+    network_gui.init(args.ip, args.port)
+    torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint)
+
+    # All done
+    print("\nTraining complete.")
