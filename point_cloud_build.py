@@ -474,9 +474,9 @@ def main():
     parser.add_argument('--volume_x', type=float, default=4, help='体积X轴长度')
     parser.add_argument('--volume_y', type=float, default=2, help='体积Y轴长度')
     parser.add_argument('--volume_z', type=float, default=1.5, help='体积Z轴长度')
-    parser.add_argument('--center_offset_x', type=float, default=-0.8, help='中心点X轴偏移量')
-    parser.add_argument('--center_offset_y', type=float, default=0.0, help='中心点Y轴偏移量')
-    parser.add_argument('--center_offset_z', type=float, default=0.3, help='中心点Z轴偏移量')
+    parser.add_argument('--center_offset_x', type=float, default=-0.8, help='体积X轴定位偏移量（不移动中心点）')
+    parser.add_argument('--center_offset_y', type=float, default=0.2, help='体积Y轴定位偏移量（不移动中心点）')
+    parser.add_argument('--center_offset_z', type=float, default=0.3, help='体积Z轴定位偏移量（不移动中心点）')
     parser.add_argument('--no_clip', action='store_true', help='不进行裁切，只生成点云')
     parser.add_argument('--use_uniform', action='store_true', help='使用均匀分布点云而非表面点云（默认使用表面点云）')
     
@@ -502,22 +502,24 @@ def main():
     
     center = np.mean(np.array(camera_positions), axis=0)
     
-    # 应用中心点偏移
-    center[0] += args.center_offset_x
-    center[1] += args.center_offset_y
-    center[2] += args.center_offset_z
+    # 创建体积中心点（仅用于体积定位，不修改原始中心点）
+    volume_center = np.copy(center)
+    volume_center[0] += args.center_offset_x
+    volume_center[1] += args.center_offset_y
+    volume_center[2] += args.center_offset_z
     
-    # 设置以中心点为基准的体积边界(x/y/z)
+    # 设置以体积中心点为基准的体积边界(x/y/z)
     half_x = args.volume_x / 2
     half_y = args.volume_y / 2
     half_z = args.volume_z / 2
     
     # 创建长方形边界
-    bounds_min = np.array([center[0] - half_x, center[1] - half_y, center[2] - half_z])
-    bounds_max = np.array([center[0] + half_x, center[1] + half_y, center[2] + half_z])
+    bounds_min = np.array([volume_center[0] - half_x, volume_center[1] - half_y, volume_center[2] - half_z])
+    bounds_max = np.array([volume_center[0] + half_x, volume_center[1] + half_y, volume_center[2] + half_z])
     
     print(f"使用体积边界:")
-    print(f"  中心点: [{center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}] (应用偏移量: [{args.center_offset_x:.4f}, {args.center_offset_y:.4f}, {args.center_offset_z:.4f}])")
+    print(f"  原始中心点: [{center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}]")
+    print(f"  体积定位点: [{volume_center[0]:.4f}, {volume_center[1]:.4f}, {volume_center[2]:.4f}] (应用偏移量: [{args.center_offset_x:.4f}, {args.center_offset_y:.4f}, {args.center_offset_z:.4f}])")
     print(f"  尺寸: {args.volume_x:.2f} x {args.volume_y:.2f} x {args.volume_z:.2f}")
     print(f"  X轴: {bounds_min[0]:.4f} 到 {bounds_max[0]:.4f}, 宽度: {bounds_max[0] - bounds_min[0]:.4f}")
     print(f"  Y轴: {bounds_min[1]:.4f} 到 {bounds_max[1]:.4f}, 高度: {bounds_max[1] - bounds_min[1]:.4f}")
