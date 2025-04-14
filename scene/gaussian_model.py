@@ -549,48 +549,25 @@ class GaussianModel:
             visibility_filter: 可见性过滤器，指定哪些高斯点需要处理
             bg_opacity_factor: 忽略此参数，保持为0以向后兼容
         """
-        # 如果没有提供可见性过滤器，则处理所有高斯点
-        if visibility_filter is None:
-            visibility_filter = torch.ones_like(self.get_opacity, dtype=torch.bool)
+        # 当前实现无法直接通过前景掩码标识哪些高斯点位于背景区域
+        # 所以我们只能处理可见高斯点，即visibility_filter标识的点
         
-        # 将前景掩码转为二维
-        foreground_mask_2d = foreground_mask.squeeze()  # [H, W]
-        
-        # 对于可见的高斯点，我们将不透明度大于阈值的点标记为可能的背景点
-        # 提高阈值，更保守地识别背景点（从0.001提高到0.003）
-        potential_background_points = (self.get_opacity > 0.003) & visibility_filter
-        
-        # 如果没有潜在的背景点，直接返回
-        if not potential_background_points.any():
+        # 如果没有提供可见性过滤器，则不处理任何点
+        if visibility_filter is None or not visibility_filter.any():
             return False, 0
+            
+        # 获取当前不透明度
+        opacity = self.get_opacity
         
-        # 获取潜在背景点的索引
-        point_indices = torch.nonzero(potential_background_points).squeeze(-1)
+        # 创建新的不透明度张量，所有可见高斯点不透明度设为0
+        new_opacity = opacity.clone()
+        new_opacity[visibility_filter] = 0.0
         
-        # 如果没有潜在的背景点，直接返回
-        if len(point_indices) == 0:
-            return False, 0
-        
-        # 创建背景点掩码，直接使用所有潜在背景点
-        background_points_mask = potential_background_points
-        
-        # 统计背景点数量
-        total_points = self.get_xyz.shape[0]
-        bg_count = background_points_mask.sum().item()
-        print(f"识别到背景点: {bg_count}/{total_points} ({(bg_count/total_points)*100:.2f}%)")
-        
-        # 创建新的不透明度张量，背景点直接设为0
-        new_opacity = self.get_opacity.clone()
-        # 将背景点的不透明度设置为0
-        new_opacity[background_points_mask] = 0.0
-        
-        # 将不透明度值转换为优化器参数
+        # 更新优化器中的不透明度值
         opacities_new = self.inverse_opacity_activation(new_opacity)
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
         
-        print(f"背景点数量: {background_points_mask.sum().item()}")
-        print(f"处理前不透明度>0的点: {(self.get_opacity > 0).sum().item()}")
-        print(f"处理后不透明度>0的点: {(new_opacity > 0).sum().item()}")
-        
-        return True, background_points_mask.sum().item()
+        # 返回处理状态和处理的点数量
+        num_processed = visibility_filter.sum().item()
+        return True, num_processed

@@ -25,26 +25,6 @@ from utils.tensorboard_utils import add_ply_to_tensorboard
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
     
-    # 检查并打印已启用的背景处理和优化功能
-    print("\n======= 伪影优化功能检查 =======")
-    if hasattr(opt, 'set_background_opacity_to_zero') and opt.set_background_opacity_to_zero:
-        print("✓ 背景点不透明度清零：已启用")
-        print(f"  - 开始迭代：{opt.bg_start_iter}")
-        print("  - 识别阈值：0.00001 (已优化)")
-        print("  - 剪枝策略：增强 (已优化)")
-    else:
-        print("✗ 背景点不透明度清零：未启用")
-        print("  警告：为减少伪影，建议启用背景点不透明度清零功能")
-        print("  添加参数：--set_background_opacity_to_zero True --bg_start_iter 1000")
-    
-    # 打印剪枝和优化策略信息
-    print("\n剪枝策略概述：")
-    print("  - 即时剪枝：不透明度 < 0.0005 的点")
-    print("  - 额外剪枝：每100次迭代，不透明度 < 0.0002 的点")
-    print("  - 全局剪枝：每500次迭代，不透明度 < 0.003 的点")
-    print("  - 密集化剪枝：根据梯度和不透明度动态执行")
-    print("==============================\n")
-
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
@@ -94,6 +74,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         gt_image = viewpoint_cam.original_image.cuda()
         
+        
+        
         # 颜色损失计算
         Ll1 = l1_loss(image, gt_image)
         
@@ -105,7 +87,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
         # regularization
-        lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
+        if iteration <= 3000:
+            lambda_normal = 0.0
+        elif iteration <= 5000:
+            lambda_normal = opt.lambda_normal * (iteration - 3000) / 2000  # 线性增加
+        else:
+            lambda_normal = opt.lambda_normal
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
         # 深度收敛损失权重设置
         lambda_conv = opt.lambda_depth_convergence if hasattr(opt, 'use_depth_convergence') and opt.use_depth_convergence and iteration > opt.conv_start_iter else 0.0
@@ -237,19 +224,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
                 
                 # 2. 然后设置背景点透明度为0（只从2000步开始）
-                if hasattr(opt, 'set_background_opacity_to_zero') and opt.set_background_opacity_to_zero and iteration > opt.bg_start_iter and iteration >= 2000:
-                    # 检查图像是否有alpha通道
-                    has_alpha = gt_image.shape[0] > 3
-                    if has_alpha:
-                        # 使用alpha通道作为前景掩码
-                        foreground_mask = gt_image[3:4]
-                        # 将背景区域高斯点不透明度直接设为0
-                        success, num_points = gaussians.set_background_opacity_to_zero(foreground_mask, visibility_filter)
-                        
-                        # 每100次迭代打印一次处理信息
-                        if iteration % 100 == 0 and success:
-                            print(f"  [背景点处理] 迭代: {iteration}")
-                            print(f"  已将 {num_points} 个背景高斯点不透明度设为0")
+                if hasattr(opt, 'set_background_opacity_to_zero') and opt.set_background_opacity_to_zero and iteration > opt.bg_start_iter and iteration >= 100:
+                    # 检查图像是否有alpha通道或单独的alpha掩码
+                    has_mask = viewpoint_cam.gt_alpha_mask is not None
+                    
+                    # if has_mask:
+                    #     # 使用单独保存的alpha掩码
+                    #     print(f"使用单独的alpha掩码，形状: {viewpoint_cam.gt_alpha_mask.shape}")
+                    #     foreground_mask = viewpoint_cam.gt_alpha_mask
+                    #     success, num_points = gaussians.set_background_opacity_to_zero(foreground_mask, visibility_filter)
+                    #     print(f"  [背景点处理(使用gt_alpha_mask)] 迭代: {iteration}, 成功: {success}")
+                    #     print(f"  处理了 {num_points} 个背景高斯点的不透明度")
                 
                 # 3. 执行统一的裁剪策略（保持原始方式）
                 # 每100次迭代执行一次裁剪
