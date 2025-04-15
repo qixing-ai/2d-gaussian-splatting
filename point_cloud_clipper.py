@@ -312,7 +312,7 @@ def main():
     parser.add_argument('--volume_y', type=float, default=2, help='体积Y轴长度')
     parser.add_argument('--volume_z', type=float, default=1.5, help='体积Z轴长度')
     parser.add_argument('--center_offset_x', type=float, default=-0.8, help='中心点X轴偏移量')
-    parser.add_argument('--center_offset_y', type=float, default=0.0, help='中心点Y轴偏移量')
+    parser.add_argument('--center_offset_y', type=float, default=0.2, help='中心点Y轴偏移量')
     parser.add_argument('--center_offset_z', type=float, default=0.3, help='中心点Z轴偏移量')
     parser.add_argument('--no_clip', action='store_true', help='不进行裁切，只生成点云')
     
