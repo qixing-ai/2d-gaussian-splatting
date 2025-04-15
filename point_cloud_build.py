@@ -357,7 +357,13 @@ def process_camera(args):
     try:
         # 读取图像的alpha通道
         image = Image.open(image_path).convert('RGBA')
-        alpha = np.array(image)[:, :, 3]
+        img_array = np.array(image)
+        alpha = img_array[:, :, 3]
+        
+        # 检查图像是否完全透明（没有前景）
+        if np.max(alpha) == 0:
+            print(f"跳过完全透明的图像: {image_path}")
+            return visibility
         
         # 批量投影点云
         pixels, valid_mask = project_points_batch(points, R, T, intr, width, height)
@@ -414,6 +420,17 @@ def calculate_points_visibility_parallel(points, cam_extrinsics, cam_intrinsics,
         if not os.path.exists(image_path):
             print(f"警告: 找不到图像 {image_path}")
             continue
+        
+        # 检查图像是否完全透明
+        try:
+            image = Image.open(image_path).convert('RGBA')
+            alpha = np.array(image)[:, :, 3]
+            if np.max(alpha) == 0:
+                print(f"跳过完全透明的图像: {image_path}")
+                continue
+        except Exception as e:
+            print(f"读取图像 {image_path} 时出错: {e}")
+            continue
             
         camera_args.append((img_id, extr, intr, points, image_path, None))
     
@@ -463,11 +480,62 @@ def save_point_cloud(points, colors, filename):
     o3d.io.write_point_cloud(filename, pcd)
     print(f"点云已保存至 {filename}")
 
+def convert_ply_to_txt(ply_filename, txt_filename, cam_extrinsics=None):
+    """
+    将PLY点云文件转换为COLMAP格式的TXT点云文件
+    
+    参数:
+    - ply_filename: 输入PLY文件路径
+    - txt_filename: 输出TXT文件路径
+    - cam_extrinsics: 相机外参，用于添加track信息
+    """
+    print(f"将PLY点云转换为COLMAP格式的TXT文件: {txt_filename}")
+    
+    # 读取PLY点云
+    pcd = o3d.io.read_point_cloud(ply_filename)
+    points = np.asarray(pcd.points)
+    colors = np.asarray(pcd.colors) * 255.0  # 转换回0-255范围
+    
+    # 如果没有颜色信息，使用默认颜色
+    if len(colors) == 0:
+        colors = np.ones((len(points), 3)) * 128  # 默认灰色
+    
+    # 创建文件并写入头部信息
+    with open(txt_filename, 'w') as f:
+        f.write("# 3D point list with one line of data per point:\n")
+        f.write("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
+        f.write(f"# Number of points: {len(points)}, mean track length: 1.0\n")
+        
+        # 写入点云数据
+        for i, (point, color) in enumerate(zip(points, colors)):
+            # COLMAP格式：点ID, X, Y, Z, R, G, B, ERROR, TRACK[]
+            point_id = i + 1  # 点ID从1开始
+            x, y, z = point
+            r, g, b = int(color[0]), int(color[1]), int(color[2])
+            error = 1.0  # 默认误差
+            
+            # 构建基本信息
+            line = f"{point_id} {x} {y} {z} {r} {g} {b} {error}"
+            
+            # 添加简单的track信息(如果没有实际相机信息，则添加虚拟track)
+            if cam_extrinsics is None:
+                # 添加一个虚拟track
+                line += f" 1 1 {i}"
+            else:
+                # 这里可以根据实际相机信息生成更复杂的track
+                # 暂时使用简化版本
+                line += f" 1 1 {i}"
+            
+            f.write(line + "\n")
+    
+    print(f"成功将点云转换为COLMAP格式并保存至 {txt_filename}")
+
 def main():
     parser = argparse.ArgumentParser(description="使用COLMAP相机参数和图像透明度对点云进行评分和可视化")
     parser.add_argument('--data_dir', type=str, required=True, help='COLMAP数据目录')
     parser.add_argument('--images_dir', type=str, help='图像目录，默认为data_dir/images')
     parser.add_argument('--output_ply', type=str, default='model.ply', help='输出点云文件名')
+    parser.add_argument('--output_txt', type=str, default='model.txt', help='输出TXT格式点云文件名')
     parser.add_argument('--dense_points', type=int, default=1000000, help='生成的均匀密集点云点数')
     parser.add_argument('--num_workers', type=int, default=None, help='并行工作进程数，默认为CPU核心数减1')
     parser.add_argument('--batch_size', type=int, default=1000, help='批处理大小')
@@ -479,6 +547,7 @@ def main():
     parser.add_argument('--center_offset_z', type=float, default=0.3, help='体积Z轴定位偏移量（不移动中心点）')
     parser.add_argument('--no_clip', action='store_true', help='不进行裁切，只生成点云')
     parser.add_argument('--use_uniform', action='store_true', help='使用均匀分布点云而非表面点云（默认使用表面点云）')
+    parser.add_argument('--no_txt', action='store_true', help='不生成TXT格式点云文件（默认会生成）')
     
     args = parser.parse_args()
     
@@ -562,10 +631,15 @@ def main():
         save_point_cloud(filtered_points, colors * 255, args.output_ply)
         print(f"过滤后的点云已保存至 {args.output_ply}")
     
+    # 将PLY转换为TXT格式（默认开启）
+    if not args.no_txt:
+        txt_filename = args.output_txt
+        convert_ply_to_txt(args.output_ply, txt_filename, cam_extrinsics)
+    
     print("点云处理完成！")
 
 if __name__ == "__main__":
     main()
 
 
-    
+    # python point_cloud_build.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ 
