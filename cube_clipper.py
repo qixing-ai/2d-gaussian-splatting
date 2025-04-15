@@ -57,7 +57,313 @@ def load_colmap_data(basedir):
 
     return cam_intrinsics, cam_extrinsics
 
-def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_intrinsics, images_dir):
+def generate_uniform_point_cloud(bounds_min, bounds_max, num_points=1000000):
+    """
+    在指定边界框内生成均匀分布的点云
+    
+    参数:
+    - bounds_min: 边界框最小值 [x_min, y_min, z_min]
+    - bounds_max: 边界框最大值 [x_max, y_max, z_max]
+    - num_points: 生成的点云数量
+    
+    返回:
+    - points: 生成的点云坐标 (N, 3)
+    """
+    print(f"在边界框内生成均匀分布的点云，数量: {num_points}")
+    print(f"边界范围: {bounds_min} 到 {bounds_max}")
+    
+    # 生成三个方向上均匀分布的随机点
+    points = np.random.uniform(
+        low=bounds_min,
+        high=bounds_max,
+        size=(num_points, 3)
+    )
+    
+    return points
+
+def generate_voxel_grid(bounds_min, bounds_max, voxel_size=0.05):
+    """
+    在指定边界框内生成均匀的体素网格点云
+    
+    参数:
+    - bounds_min: 边界框最小值 [x_min, y_min, z_min]
+    - bounds_max: 边界框最大值 [x_max, y_max, z_max]
+    - voxel_size: 体素大小（立方体边长）
+    
+    返回:
+    - points: 生成的体素网格中心点坐标 (N, 3)
+    """
+    print(f"在边界框内生成体素网格，体素大小: {voxel_size}")
+    print(f"边界范围: {bounds_min} 到 {bounds_max}")
+    
+    # 计算每个维度的体素数量
+    num_voxels_x = int((bounds_max[0] - bounds_min[0]) / voxel_size) + 1
+    num_voxels_y = int((bounds_max[1] - bounds_min[1]) / voxel_size) + 1
+    num_voxels_z = int((bounds_max[2] - bounds_min[2]) / voxel_size) + 1
+    
+    print(f"体素网格尺寸: {num_voxels_x} x {num_voxels_y} x {num_voxels_z} = {num_voxels_x * num_voxels_y * num_voxels_z} 个体素")
+    
+    # 生成每个维度的坐标
+    x_coords = np.linspace(bounds_min[0], bounds_max[0], num_voxels_x)
+    y_coords = np.linspace(bounds_min[1], bounds_max[1], num_voxels_y)
+    z_coords = np.linspace(bounds_min[2], bounds_max[2], num_voxels_z)
+    
+    # 使用meshgrid创建3D网格
+    X, Y, Z = np.meshgrid(x_coords, y_coords, z_coords, indexing='ij')
+    
+    # 将网格点转换为坐标点列表
+    points = np.column_stack([X.flatten(), Y.flatten(), Z.flatten()])
+    
+    return points
+
+def generate_surface_voxel_grid(bounds_min, bounds_max, cam_extrinsics, cam_intrinsics, images_dir, voxel_size=0.05):
+    """
+    在指定边界框内生成适应表面的体素网格点云
+    
+    参数:
+    - bounds_min: 边界框最小值 [x_min, y_min, z_min]
+    - bounds_max: 边界框最大值 [x_max, y_max, z_max]
+    - cam_extrinsics: 相机外参
+    - cam_intrinsics: 相机内参
+    - images_dir: 图像目录
+    - voxel_size: 体素大小（立方体边长）
+    
+    返回:
+    - points: 生成的表面体素网格点云 (N, 3)
+    """
+    print(f"生成适应表面的体素网格点云，体素大小: {voxel_size}")
+    print(f"边界范围: {bounds_min} 到 {bounds_max}")
+    
+    # 先生成完整的体素网格点云和索引
+    grid_points = generate_voxel_grid(bounds_min, bounds_max, voxel_size)
+    print(f"基础体素网格点数: {len(grid_points)}")
+    
+    # 计算体素网格的尺寸
+    voxel_dims = np.ceil((bounds_max - bounds_min) / voxel_size).astype(int)
+    nx, ny, nz = voxel_dims
+    print(f"体素网格维度: [{nx}, {ny}, {nz}]")
+    
+    # 创建体素索引映射 - 从3D体素索引到点云中的索引
+    # 用于快速查找体素对应的点
+    voxel_map = {}
+    for i, point in enumerate(grid_points):
+        # 计算体素索引
+        voxel_idx = tuple(np.floor((point - bounds_min) / voxel_size).astype(int))
+        voxel_map[voxel_idx] = i
+    
+    # 收集所有相机图像中的前景/背景边缘信息
+    edge_voxels = set()  # 使用集合存储边缘体素的索引
+    
+    # 遍历所有相机视角
+    for img_id, extr in cam_extrinsics.items():
+        intr = cam_intrinsics[extr.camera_id]
+        image_path = os.path.join(images_dir, extr.name)
+        
+        if not os.path.exists(image_path):
+            print(f"警告: 找不到图像 {image_path}")
+            continue
+        
+        try:
+            # 读取图像的alpha通道
+            image = Image.open(image_path).convert('RGBA')
+            img_array = np.array(image)
+            alpha = img_array[:, :, 3]
+            
+            # 提取边缘（前景/背景分割线）
+            alpha_blur = ndimage.gaussian_filter(alpha, sigma=1.0)
+            edge_x = ndimage.sobel(alpha_blur, axis=0)
+            edge_y = ndimage.sobel(alpha_blur, axis=1)
+            edge_mag = np.sqrt(edge_x**2 + edge_y**2)
+            
+            # 阈值化为二值边缘图
+            threshold = np.percentile(edge_mag, 95)  # 取边缘强度前5%的点
+            edge_binary = (edge_mag > threshold).astype(np.uint8)
+            
+            # 获取边缘点坐标
+            edge_pixels = np.where(edge_binary > 0)
+            
+            if len(edge_pixels[0]) == 0:
+                continue
+                
+            # 获取相机参数
+            R = qvec2rotmat(extr.qvec)
+            T = np.array(extr.tvec)
+            width, height = intr.width, intr.height
+            
+            # 根据相机模型获取焦距和主点
+            if intr.model == "SIMPLE_PINHOLE":
+                focal_length = intr.params[0]
+                cx = intr.params[1]
+                cy = intr.params[2]
+                fx, fy = focal_length, focal_length
+            elif intr.model == "PINHOLE":
+                fx = intr.params[0]
+                fy = intr.params[1]
+                cx = intr.params[2]
+                cy = intr.params[3]
+            elif intr.model == "RADIAL":
+                focal_length = intr.params[0]
+                cx = intr.params[1]
+                cy = intr.params[2]
+                fx, fy = focal_length, focal_length
+            else:
+                print(f"不支持的相机模型: {intr.model}")
+                continue
+            
+            # 计算相机中心位置
+            camera_center = -R.T @ T
+            
+            # 投射光线，找到与体素网格相交的边缘体素
+            edge_v = edge_pixels[0]
+            edge_u = edge_pixels[1]
+            
+            # 随机采样边缘点以提高性能
+            num_samples = min(len(edge_u), 5000)
+            if len(edge_u) > num_samples:
+                indices = np.random.choice(len(edge_u), num_samples, replace=False)
+                edge_u = edge_u[indices]
+                edge_v = edge_v[indices]
+            
+            # 高效的DDA算法进行光线投射
+            for u, v in zip(edge_u, edge_v):
+                # 像素坐标归一化
+                x = (u - cx) / fx
+                y = (v - cy) / fy
+                
+                # 构建方向向量
+                direction = np.array([x, y, 1.0])
+                direction = direction / np.linalg.norm(direction)
+                
+                # 将方向从相机坐标系转到世界坐标系
+                world_direction = R.T @ direction
+                
+                # 光线的起点
+                ray_origin = camera_center
+                
+                # 计算光线与包围盒的相交点
+                # 光线公式: ray_origin + t * world_direction
+                # 需要计算t值使得点在包围盒表面
+                t_min = np.full(3, -np.inf)
+                t_max = np.full(3, np.inf)
+                
+                for i in range(3):
+                    if abs(world_direction[i]) > 1e-6:
+                        t1 = (bounds_min[i] - ray_origin[i]) / world_direction[i]
+                        t2 = (bounds_max[i] - ray_origin[i]) / world_direction[i]
+                        t_min[i] = min(t1, t2)
+                        t_max[i] = max(t1, t2)
+                    elif ray_origin[i] < bounds_min[i] or ray_origin[i] > bounds_max[i]:
+                        # 光线平行于轴且不在边界框内
+                        continue
+                
+                tmin = max(np.max(t_min), 0)  # 确保不会向相机后面走
+                tmax = np.min(t_max)
+                
+                if tmin > tmax:
+                    continue  # 光线未击中包围盒
+                
+                # 开始体素穿越
+                # 初始位置
+                curr_pos = ray_origin + tmin * world_direction
+                
+                # 确保起点在体积内
+                if not ((curr_pos >= bounds_min).all() and (curr_pos <= bounds_max).all()):
+                    curr_pos = np.clip(curr_pos, bounds_min, bounds_max)
+                
+                # 计算初始体素索引
+                voxel_idx = np.floor((curr_pos - bounds_min) / voxel_size).astype(int)
+                
+                # 计算下一个体素的步长
+                step = np.sign(world_direction).astype(int)
+                
+                # 计算t值的增量
+                delta_t = voxel_size / np.abs(world_direction)
+                delta_t = np.where(np.isfinite(delta_t), delta_t, np.inf)
+                
+                # 计算到下一个体素边界的t值
+                next_t = np.zeros(3)
+                for i in range(3):
+                    if step[i] > 0:
+                        next_t[i] = ((voxel_idx[i] + 1) * voxel_size + bounds_min[i] - ray_origin[i]) / world_direction[i]
+                    elif step[i] < 0:
+                        next_t[i] = (voxel_idx[i] * voxel_size + bounds_min[i] - ray_origin[i]) / world_direction[i]
+                    else:
+                        next_t[i] = np.inf
+                
+                # 沿光线遍历体素
+                max_steps = 100  # 限制步数
+                for _ in range(max_steps):
+                    # 检查当前体素是否有效
+                    if (voxel_idx >= 0).all() and (voxel_idx < voxel_dims).all():
+                        voxel_key = tuple(voxel_idx)
+                        if voxel_key in voxel_map:
+                            edge_voxels.add(voxel_map[voxel_key])
+                            break  # 找到一个边缘体素后停止
+                    
+                    # 找出下一个要穿越的轴
+                    axis = np.argmin(next_t)
+                    
+                    # 更新体素索引
+                    voxel_idx[axis] += step[axis]
+                    
+                    # 检查是否已经离开体积
+                    if voxel_idx[axis] < 0 or voxel_idx[axis] >= voxel_dims[axis]:
+                        break
+                    
+                    # 更新下一个t值
+                    next_t[axis] += delta_t[axis]
+            
+            print(f"从图像 {extr.name} 处理后的边缘体素数: {len(edge_voxels)}")
+            
+        except Exception as e:
+            print(f"处理图像 {image_path} 时出错: {e}")
+            continue
+    
+    if not edge_voxels:
+        print("警告: 没有找到边缘体素，将使用完整体素网格")
+        return grid_points
+    
+    # 提取边缘体素点
+    edge_points = grid_points[list(edge_voxels)]
+    print(f"找到的边缘体素点数: {len(edge_points)}")
+    
+    # 如果边缘体素太少，扩展邻域
+    if len(edge_points) < 1000:
+        print("边缘体素数量较少，扩展到邻域体素")
+        expanded_voxels = set(edge_voxels)
+        
+        # 定义邻域偏移量 (26个邻居)
+        neighbors = []
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                for dz in [-1, 0, 1]:
+                    if dx == 0 and dy == 0 and dz == 0:
+                        continue
+                    neighbors.append(np.array([dx, dy, dz]))
+        
+        # 扩展到邻居体素
+        for idx in edge_voxels:
+            point = grid_points[idx]
+            # 转换为体素索引
+            voxel_idx = np.floor((point - bounds_min) / voxel_size).astype(int)
+            
+            # 检查26个邻居
+            for neighbor in neighbors:
+                neighbor_idx = voxel_idx + neighbor
+                neighbor_key = tuple(neighbor_idx)
+                
+                # 检查邻居体素是否有效且在体素映射中
+                if (neighbor_idx >= 0).all() and (neighbor_idx < voxel_dims).all() and neighbor_key in voxel_map:
+                    expanded_voxels.add(voxel_map[neighbor_key])
+        
+        # 更新边缘体素集合
+        edge_voxels = expanded_voxels
+        edge_points = grid_points[list(edge_voxels)]
+        print(f"扩展后的边缘体素点数: {len(edge_points)}")
+    
+    return edge_points
+
+def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_intrinsics, images_dir, num_points=1000000):
     """
     在指定边界框内生成面状点云，基于图像中的前景/背景分割边缘
     
@@ -67,11 +373,12 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
     - cam_extrinsics: 相机外参
     - cam_intrinsics: 相机内参
     - images_dir: 图像目录
+    - num_points: 目标点云数量
     
     返回:
     - points: 生成的面状点云坐标 (N, 3)
     """
-    print(f"基于图像边缘生成面状点云")
+    print(f"基于图像边缘生成面状点云，目标数量: {num_points}")
     print(f"边界范围: {bounds_min} 到 {bounds_max}")
     
     # 保存所有相机投射出的表面点
@@ -100,7 +407,7 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
             edge_mag = np.sqrt(edge_x**2 + edge_y**2)
             
             # 阈值化为二值边缘图
-            threshold = np.percentile(edge_mag, 98)  # 取边缘强度前2%的点
+            threshold = np.percentile(edge_mag, 95)  # 取边缘强度前5%的点
             edge_binary = (edge_mag > threshold).astype(np.uint8)
             
             # 获取边缘点坐标
@@ -182,10 +489,40 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
     
     # 转换为numpy数组
     if not all_surface_points:
-        print("错误: 没有生成任何表面点，请检查输入图像和参数")
-        return None
+        print("警告: 没有生成任何表面点，将回退到均匀分布的点云")
+        return generate_uniform_point_cloud(bounds_min, bounds_max, num_points)
     
     surface_points = np.array(all_surface_points)
+    
+    # 如果点云数量超过目标数量，随机采样
+    if len(surface_points) > num_points:
+        idx = np.random.choice(len(surface_points), num_points, replace=False)
+        surface_points = surface_points[idx]
+    
+    # 如果点云数量不足，通过添加周围小的随机扰动来增加点数
+    if len(surface_points) < num_points:
+        print(f"生成的表面点数量 ({len(surface_points)}) 不足目标数量 ({num_points})，添加随机扰动增加点数")
+        points_needed = num_points - len(surface_points)
+        
+        # 计算点云边界尺寸的5%作为扰动范围
+        bounds_size = bounds_max - bounds_min
+        noise_scale = bounds_size * 0.05
+        
+        # 随机选择原始点添加噪声
+        indices = np.random.choice(len(surface_points), points_needed)
+        base_points = surface_points[indices]
+        
+        # 添加随机扰动
+        noise = np.random.normal(0, 1, (points_needed, 3)) * noise_scale
+        additional_points = base_points + noise
+        
+        # 确保仍在边界内
+        for i in range(3):
+            additional_points[:, i] = np.clip(additional_points[:, i], bounds_min[i], bounds_max[i])
+        
+        # 合并点云
+        surface_points = np.vstack([surface_points, additional_points])
+    
     print(f"最终生成了 {len(surface_points)} 个表面点")
     return surface_points
 
@@ -481,6 +818,7 @@ def main():
     parser.add_argument('--images_dir', type=str, help='图像目录，默认为data_dir/images')
     parser.add_argument('--output_ply', type=str, default='model.ply', help='输出点云文件名')
     parser.add_argument('--output_txt', type=str, default='model.txt', help='输出TXT格式点云文件名')
+    parser.add_argument('--dense_points', type=int, default=1000000, help='生成的均匀密集点云点数')
     parser.add_argument('--num_workers', type=int, default=None, help='并行工作进程数，默认为CPU核心数减1')
     parser.add_argument('--batch_size', type=int, default=1000, help='批处理大小')
     parser.add_argument('--volume_x', type=float, default=4, help='体积X轴长度')
@@ -490,6 +828,10 @@ def main():
     parser.add_argument('--center_offset_y', type=float, default=0.2, help='体积Y轴定位偏移量（不移动中心点）')
     parser.add_argument('--center_offset_z', type=float, default=0.3, help='体积Z轴定位偏移量（不移动中心点）')
     parser.add_argument('--no_clip', action='store_true', help='不进行裁切，只生成点云')
+    parser.add_argument('--use_uniform', action='store_true', help='使用均匀分布点云而非表面点云（默认使用表面点云）')
+    parser.add_argument('--use_voxel', action='store_true', help='使用体素网格点云而非表面点云或随机点云')
+    parser.add_argument('--voxel_size', type=float, default=0.05, help='体素大小（当use_voxel为True时有效）')
+    parser.add_argument('--surface_voxel', action='store_true', help='使用适应表面的体素网格点云')
     parser.add_argument('--no_txt', action='store_true', help='不生成TXT格式点云文件（默认会生成）')
     
     args = parser.parse_args()
@@ -537,17 +879,27 @@ def main():
     print(f"  Y轴: {bounds_min[1]:.4f} 到 {bounds_max[1]:.4f}, 高度: {bounds_max[1] - bounds_min[1]:.4f}")
     print(f"  Z轴: {bounds_min[2]:.4f} 到 {bounds_max[2]:.4f}, 深度: {bounds_max[2] - bounds_min[2]:.4f}")
     
-    # 生成基于图像边缘的表面点云
-    print(f"生成基于图像边缘的表面点云")
-    input_points = generate_surface_point_cloud(
-        bounds_min, bounds_max, 
-        cam_extrinsics, cam_intrinsics, 
-        args.images_dir
-    )
-    
-    if input_points is None:
-        print("点云生成失败，退出程序")
-        return
+    # 生成点云(四种模式：表面点云、表面体素网格、均匀体素网格、均匀分布)
+    if args.surface_voxel:
+        print(f"生成适应表面的体素网格点云，体素大小: {args.voxel_size}")
+        input_points = generate_surface_voxel_grid(
+            bounds_min, bounds_max,
+            cam_extrinsics, cam_intrinsics,
+            args.images_dir, args.voxel_size
+        )
+    elif args.use_voxel:
+        print(f"生成均匀体素网格点云，体素大小: {args.voxel_size}")
+        input_points = generate_voxel_grid(bounds_min, bounds_max, args.voxel_size)
+    elif args.use_uniform:
+        print(f"生成均匀分布的密集点云，点数: {args.dense_points}")
+        input_points = generate_uniform_point_cloud(bounds_min, bounds_max, args.dense_points)
+    else:
+        print(f"生成基于图像边缘的表面点云，目标点数: {args.dense_points}")
+        input_points = generate_surface_point_cloud(
+            bounds_min, bounds_max, 
+            cam_extrinsics, cam_intrinsics, 
+            args.images_dir, args.dense_points
+        )
     
     if args.no_clip:
         # 不进行裁切，直接保存全部点云
@@ -586,3 +938,19 @@ if __name__ == "__main__":
 
 
     # python point_cloud_build.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ 
+
+# 使用示例:
+# 1. 使用原始表面点云方式：
+#    python cube_clipper.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ 
+#
+# 2. 使用均匀体素网格（速度更快，但不贴合表面）：
+#    python cube_clipper.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ --use_voxel --voxel_size 0.05
+#
+# 3. 使用表面适应的体素网格（推荐，速度较快且贴合表面）：
+#    python cube_clipper.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ --surface_voxel --voxel_size 0.03
+#
+# 4. 调整体素大小（更小的值生成更精细的网格）：
+#    python cube_clipper.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ --surface_voxel --voxel_size 0.02
+#
+# 5. 不进行裁剪，只生成体素网格：
+#    python cube_clipper.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ --surface_voxel --voxel_size 0.05 --no_clip 
