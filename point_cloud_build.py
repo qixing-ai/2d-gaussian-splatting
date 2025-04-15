@@ -57,7 +57,7 @@ def load_colmap_data(basedir):
 
     return cam_intrinsics, cam_extrinsics
 
-def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_intrinsics, images_dir):
+def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_intrinsics, images_dir, depth_start=3.0, depth_end=4.0, depth_step=0.05):
     """
     在指定边界框内生成面状点云，基于图像中的前景/背景分割边缘
     
@@ -67,6 +67,9 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
     - cam_extrinsics: 相机外参
     - cam_intrinsics: 相机内参
     - images_dir: 图像目录
+    - depth_start: 深度采样的起始深度（米）
+    - depth_end: 深度采样的结束深度（米）
+    - depth_step: 深度采样的步长（米）
     
     返回:
     - points: 生成的面状点云坐标 (N, 3)
@@ -109,12 +112,17 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
             if len(edge_pixels[0]) == 0:
                 continue
                 
-            # 如果边缘点太多，随机采样
+            # 如果边缘点太多，使用均值采样
             max_edge_points = 2000  # 每个视角最多使用的边缘点数
             if len(edge_pixels[0]) > max_edge_points:
-                idx = np.random.choice(len(edge_pixels[0]), max_edge_points, replace=False)
-                edge_v = edge_pixels[0][idx]
-                edge_u = edge_pixels[1][idx]
+                # 将边缘点按照坐标排序
+                edge_coords = np.column_stack((edge_pixels[0], edge_pixels[1]))
+                # 计算采样间隔
+                step = len(edge_coords) // max_edge_points
+                # 均匀采样
+                sampled_indices = np.arange(0, len(edge_coords), step)[:max_edge_points]
+                edge_v = edge_pixels[0][sampled_indices]
+                edge_u = edge_pixels[1][sampled_indices]
             else:
                 edge_v = edge_pixels[0]
                 edge_u = edge_pixels[1]
@@ -124,7 +132,13 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
             T = np.array(extr.tvec)
             width, height = intr.width, intr.height
             
-            # 从相机向边缘点投射光线
+            # 计算相机中心位置
+            camera_center = -R.T @ T
+            
+            # 使用固定等距深度
+            depths = np.arange(depth_start, depth_end + depth_step, depth_step)
+            
+            # 对每个边缘点，通过反投影生成不同深度的点
             surface_points = []
             
             # 根据相机模型获取焦距和主点
@@ -147,12 +161,7 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
                 print(f"不支持的相机模型: {intr.model}")
                 continue
             
-            # 计算相机中心位置
-            camera_center = -R.T @ T
-            
             # 对每个边缘点，通过反投影生成不同深度的点
-            depths = np.linspace(0.1, 5.0, 20)  # 在不同深度采样，可根据场景调整
-            
             for u, v in zip(edge_u, edge_v):
                 # 像素坐标归一化到[-1,1]
                 x = (u - cx) / fx
@@ -491,6 +500,9 @@ def main():
     parser.add_argument('--center_offset_z', type=float, default=0.3, help='体积Z轴定位偏移量（不移动中心点）')
     parser.add_argument('--no_clip', action='store_true', help='不进行裁切，只生成点云')
     parser.add_argument('--no_txt', action='store_true', help='不生成TXT格式点云文件（默认会生成）')
+    parser.add_argument('--depth_start', type=float, default=3.0, help='深度采样的起始深度（米）')
+    parser.add_argument('--depth_end', type=float, default=4.0, help='深度采样的结束深度（米）')
+    parser.add_argument('--depth_step', type=float, default=0.05, help='深度采样的步长（米）')
     
     args = parser.parse_args()
     
@@ -542,7 +554,10 @@ def main():
     input_points = generate_surface_point_cloud(
         bounds_min, bounds_max, 
         cam_extrinsics, cam_intrinsics, 
-        args.images_dir
+        args.images_dir,
+        args.depth_start,
+        args.depth_end,
+        args.depth_step
     )
     
     if input_points is None:
