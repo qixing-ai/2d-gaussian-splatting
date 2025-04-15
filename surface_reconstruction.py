@@ -76,9 +76,8 @@ def project_points_to_pixel(points, R, T, intrinsics, width, height):
     将3D点投影到图像平面，返回像素坐标和有效性掩码
     (简化版 project_points_batch, 只需基本投影)
     """
-    points_camera = np.dot(points - T, R) # 世界到相机坐标系变换 P_cam = R @ (P_world - C) = R @ P_world - R @ C = R @ P_world + T
-    # 注意：COLMAP 的 T 是 -R @ C，所以 P_cam = R @ P_world + T 是正确的
-    
+    points_camera = np.dot(points, R.T) + T
+
     # 检查点是否在相机前方
     z_positive = points_camera[:, 2] > 1e-6 # 添加一个小阈值防止除零
 
@@ -184,10 +183,16 @@ def estimate_normals_from_views(points, cam_extrinsics, cam_intrinsics, normals_
     print("从不同视角估计点云法线...")
     for img_id, extr in tqdm(cam_extrinsics.items(), desc="处理相机视角"):
         intr = cam_intrinsics[extr.camera_id]
-        normal_map_path = os.path.join(normals_dir, extr.name) # 假设法线图文件名与图像名相同
+        # normal_map_path = os.path.join(normals_dir, extr.name) # 假设法线图文件名与图像名相同
+        
+        # 根据用户描述，构建法线图文件名 (例如 N001.png -> N001_normal.png)
+        base_name, ext = os.path.splitext(extr.name)
+        normal_filename = f"{base_name}_normal{ext}"
+        normal_map_path = os.path.join(normals_dir, normal_filename)
 
         if not os.path.exists(normal_map_path):
-            # print(f"警告: 找不到法线图 {normal_map_path}")
+            # 打印更详细的查找失败信息，方便调试
+            # print(f"警告: 尝试查找法线图失败: {normal_map_path}")
             continue
 
         try:
@@ -368,9 +373,3 @@ if __name__ == "__main__":
     main() 
 
 
-    #     python surface_reconstruction.py \
-        --input_ply model.ply \
-        --data_dir /workspace/2dgs/reoutput \
-        --normals_dir /workspace/2dgs/reoutput/normal_maps \
-        --output_mesh reconstructed_model.ply \
-        --poisson_depth 9
