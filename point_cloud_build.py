@@ -100,7 +100,7 @@ def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_int
             edge_mag = np.sqrt(edge_x**2 + edge_y**2)
             
             # 阈值化为二值边缘图
-            threshold = np.percentile(edge_mag, 98)  # 取边缘强度前2%的点
+            threshold = np.percentile(edge_mag, 99)  # 取边缘强度前1%的点
             edge_binary = (edge_mag > threshold).astype(np.uint8)
             
             # 获取边缘点坐标
