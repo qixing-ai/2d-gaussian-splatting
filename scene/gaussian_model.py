@@ -289,7 +289,6 @@ class GaussianModel:
 
     def prune_points(self, mask):
         valid_points_mask = ~mask
-        print(f"Pruning {mask.sum().item()} points out of {mask.shape[0]}. Remaining points: {valid_points_mask.sum().item()}")
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]

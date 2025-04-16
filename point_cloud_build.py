@@ -24,39 +24,6 @@ import time
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 
-def load_colmap_data(basedir):
-    """
-    加载COLMAP数据（相机参数）
-    """
-
-    cameras_file = os.path.join(basedir, "sparse/0/cameras.txt")
-    images_file = os.path.join(basedir, "sparse/0/images.txt")
-
-    # 加载相机内参
-    if os.path.exists(cameras_file):
-        if cameras_file.endswith('.bin'):
-            cam_intrinsics = read_intrinsics_binary(cameras_file)
-        else:
-            cam_intrinsics = read_intrinsics_text(cameras_file)
-    else:
-        print(f"错误: 找不到相机参数文件 {cameras_file}")
-        return None, None
-
-    # 加载相机外参
-    if os.path.exists(images_file):
-        if images_file.endswith('.bin'):
-            cam_extrinsics = read_extrinsics_binary(images_file)
-        else:
-            cam_extrinsics = read_extrinsics_text(images_file)
-    else:
-        print(f"错误: 找不到图像参数文件 {images_file}")
-        return None, None
-
-    print(f"加载了 {len(cam_intrinsics)} 个相机内参")
-    print(f"加载了 {len(cam_extrinsics)} 个相机外参")
-
-    return cam_intrinsics, cam_extrinsics
-
 def generate_surface_point_cloud(bounds_min, bounds_max, cam_extrinsics, cam_intrinsics, images_dir, depth_start=3.0, depth_end=4.0, depth_step=0.05):
     """
     在指定边界框内生成面状点云，基于图像中的前景/背景分割边缘
@@ -509,13 +476,58 @@ def main():
     # 设置默认图像目录
     if args.images_dir is None:
         args.images_dir = os.path.join(args.data_dir, 'images')
-    
-    # 加载COLMAP数据 (只需要相机参数)
-    cam_intrinsics, cam_extrinsics = load_colmap_data(args.data_dir)
-    if cam_intrinsics is None or cam_extrinsics is None:
-        print("无法加载COLMAP相机参数，退出程序。")
+
+    # --- 直接加载 COLMAP 相机参数 ---
+    cameras_file = os.path.join(args.data_dir, "sparse/0/cameras.txt")
+    images_file = os.path.join(args.data_dir, "sparse/0/images.txt")
+    cameras_bin_file = os.path.join(args.data_dir, "sparse/0/cameras.bin")
+    images_bin_file = os.path.join(args.data_dir, "sparse/0/images.bin")
+
+    cam_intrinsics = None
+    cam_extrinsics = None
+
+    # 优先加载二进制文件（如果存在）
+    if os.path.exists(cameras_bin_file):
+        try:
+            cam_intrinsics = read_intrinsics_binary(cameras_bin_file)
+            print(f"从二进制文件加载了 {len(cam_intrinsics)} 个相机内参: {cameras_bin_file}")
+        except Exception as e:
+            print(f"加载 cameras.bin 失败: {e}, 尝试加载文本文件。")
+            cam_intrinsics = None
+
+    if cam_intrinsics is None and os.path.exists(cameras_file):
+        try:
+            cam_intrinsics = read_intrinsics_text(cameras_file)
+            print(f"从文本文件加载了 {len(cam_intrinsics)} 个相机内参: {cameras_file}")
+        except Exception as e:
+            print(f"加载 cameras.txt 失败: {e}")
+            cam_intrinsics = None
+
+    if os.path.exists(images_bin_file):
+        try:
+            cam_extrinsics = read_extrinsics_binary(images_bin_file)
+            print(f"从二进制文件加载了 {len(cam_extrinsics)} 个相机外参: {images_bin_file}")
+        except Exception as e:
+            print(f"加载 images.bin 失败: {e}, 尝试加载文本文件。")
+            cam_extrinsics = None
+
+    if cam_extrinsics is None and os.path.exists(images_file):
+        try:
+            cam_extrinsics = read_extrinsics_text(images_file)
+            print(f"从文本文件加载了 {len(cam_extrinsics)} 个相机外参: {images_file}")
+        except Exception as e:
+            print(f"加载 images.txt 失败: {e}")
+            cam_extrinsics = None
+
+    # 检查是否成功加载
+    if cam_intrinsics is None or len(cam_intrinsics) == 0:
+        print(f"错误: 无法在 {args.data_dir}/sparse/0/ 中找到或加载有效的相机内参文件 (cameras.txt 或 cameras.bin)")
         return
-    
+    if cam_extrinsics is None or len(cam_extrinsics) == 0:
+        print(f"错误: 无法在 {args.data_dir}/sparse/0/ 中找到或加载有效的相机外参文件 (images.txt 或 images.bin)")
+        return
+    # --- COLMAP 参数加载结束 ---
+
     # 获取相机中心位置(用于定位人像)
     camera_positions = []
     for _, extr in cam_extrinsics.items():
@@ -598,4 +610,4 @@ if __name__ == "__main__":
     main()
 
 
-    # python point_cloud_build.py --data_dir /workspace/2dgs/reoutput --images_dir /workspace/2dgs/reoutput/images/ 
+ 
