@@ -58,8 +58,6 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
-        self.gt_normal_path = None
-        self.gt_normal_suffix = ".png"
         descriptions = {
             "sh_degree": "球谐系数的度数",
             "source_path": "数据集路径",
@@ -67,8 +65,6 @@ class ModelParams(ParamGroup):
             "images": "图像文件夹名称",
             "resolution": "图像分辨率，-1表示使用原始分辨率",
             "white_background": "使用白色背景",
-            "gt_normal_path": "包含真值法线图的目录路径 (可选)",
-            "gt_normal_suffix": "真值法线图的文件后缀名 (例如 .png, _normal.png)",
         }
         super().__init__(parser, "Loading Parameters", sentinel, descriptions=descriptions)
 
@@ -130,8 +126,8 @@ class OptimizationParams(ParamGroup):
         self.set_background_opacity_to_zero = True  # 启用背景高斯点不透明度直接设为0，默认开启
         self.lambda_bg_opacity = 0.1 # 背景透明度损失权重
         
-        # 真值法线损失参数 (新添加)
-        self.lambda_gt_normal = 0.5 # 真值法线损失权重
+        # 背景相关参数
+        self.lambda_depth_smoothness = 1.0 # 背景深度平滑损失权重
         
         # 数据增强相关参数
         self.use_data_augmentation = False  # 是否使用数据增强
@@ -160,7 +156,6 @@ class OptimizationParams(ParamGroup):
             "cull_from_iter": "从哪个迭代开始进行不透明度裁剪 (默认与 densify_from_iter 相同)", # 新增描述
             "use_data_augmentation": "是否使用数据增强",
             "lambda_bg_opacity": "Weight for background opacity loss to make background transparent",
-            "lambda_gt_normal": "Weight for the ground truth normal map loss (default: 0.0)", # 新增描述
             "iterations": "训练迭代次数",
             "position_lr_init": "初始位置学习率",
             "position_lr_final": "最终位置学习率",
@@ -192,7 +187,7 @@ class OptimizationParams(ParamGroup):
             "cull_from_iter": "从哪个迭代开始进行不透明度裁剪 (默认与 densify_from_iter 相同)", 
             "use_data_augmentation": "是否使用数据增强",
             "lambda_bg_opacity": "背景透明度损失权重",
-            "lambda_gt_normal": "真值法线损失权重", # 新增描述
+            "lambda_depth_smoothness": "背景深度平滑损失权重",
         }
         
         # 调用基类构造函数，它会处理所有定义的属性
