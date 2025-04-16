@@ -244,18 +244,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    # 恢复使用原始的密集化方法
                     # 计算梯度
                     grads = gaussians.xyz_gradient_accum / gaussians.denom
                     grads[grads.isnan()] = 0.0
                     
-                    # 裁剪低不透明度的点
-                    opacity_mask = (gaussians.get_opacity < opt.opacity_cull).squeeze()
-                    gaussians.prune_points(opacity_mask)
-                    
                     # 执行稠密化操作
                     gaussians.densify_and_clone(grads, opt.densify_grad_threshold, scene.cameras_extent)
                     gaussians.densify_and_split(grads, opt.densify_grad_threshold, scene.cameras_extent)
+
+                    # 裁剪低不透明度的点
+                    opacity_mask = (gaussians.get_opacity < opt.opacity_cull).squeeze()
+                    gaussians.prune_points(opacity_mask)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
