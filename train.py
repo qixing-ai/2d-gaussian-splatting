@@ -68,7 +68,32 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-        
+
+        # 检查图像是否完全透明
+        is_fully_transparent = False
+        # 优先检查gt_alpha_mask是否存在且是否全为0
+        if hasattr(viewpoint_cam, 'gt_alpha_mask') and viewpoint_cam.gt_alpha_mask is not None:
+            # 假设 gt_alpha_mask 是一个张量，检查其最大值
+            # 使用一个小的阈值以防浮点数精度问题
+            if torch.max(viewpoint_cam.gt_alpha_mask) < 1e-6:
+                 is_fully_transparent = True
+        # 如果没有 alpha 掩码，检查原始图像是否有 alpha 通道 (RGBA)
+        elif viewpoint_cam.original_image.shape[0] == 4:
+             # 提取 alpha 通道 (索引为 3)
+             alpha_channel = viewpoint_cam.original_image[3, :, :]
+             # 检查 alpha 通道的最大值
+             if torch.max(alpha_channel) < 1e-6: # 假设 alpha 范围是 0-1
+                 is_fully_transparent = True
+
+        # 如果图像完全透明，则打印信息并跳过此迭代
+        if is_fully_transparent:
+            print(f"Skipping fully transparent image: {viewpoint_cam.image_name} (Iteration {iteration})")
+            # 如果弹出此相机后堆栈为空，则重新填充
+            # （注意：现有逻辑已在每次迭代开始时检查并填充空堆栈）
+            # if not viewpoint_stack:
+            #      viewpoint_stack = scene.getTrainCameras().copy()
+            continue # 跳到下一次迭代
+
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
