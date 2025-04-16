@@ -567,9 +567,8 @@ def main():
     if args.no_clip:
         # 不进行裁切，直接保存全部点云
         print("跳过裁切步骤，保存所有生成的点云")
-        # 为所有点设置统一颜色（蓝色）
-        colors = np.zeros((len(input_points), 3))
-        colors[:, 2] = 1.0  # 设置蓝色通道
+        # 为所有点设置统一颜色（白色）
+        colors = np.ones((len(input_points), 3))  # 设置白色
         save_point_cloud(input_points, colors * 255, args.output_ply)
         print(f"原始点云已保存至 {args.output_ply}")
     else:
@@ -581,9 +580,8 @@ def main():
         
         # 过滤点云
         filtered_points = input_points[foreground_mask]
-        # 为点云设置统一颜色（蓝色）
-        colors = np.zeros((len(filtered_points), 3))
-        colors[:, 2] = 1.0  # 设置蓝色通道
+        # 为点云设置统一颜色（白色）
+        colors = np.ones((len(filtered_points), 3))  # 设置白色
         
         # 保存过滤后的点云
         save_point_cloud(filtered_points, colors * 255, args.output_ply)
