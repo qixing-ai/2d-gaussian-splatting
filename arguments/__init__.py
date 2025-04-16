@@ -85,12 +85,10 @@ class PipelineParams(ParamGroup):
         super().__init__(parser, "Pipeline Parameters", descriptions=descriptions)
 
 class OptimizationParams(ParamGroup):
-    def __init__(self, parser):
-        # 迭代次数
-        self.iterations = 14_000
-        
-        # 学习率参数
-        self.position_lr_init = 0.00016
+    def __init__(self, parser, lr=0.00016, iterations=30_000):
+        # 定义所有优化参数为类属性
+        self.iterations = iterations
+        self.position_lr_init = lr
         self.position_lr_final = 0.0000008
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 14_000
@@ -107,7 +105,8 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.0001
         
         # 裁剪参数 (新添加)
-        self.cull_from_iter = 3000
+        # 设置默认值为 -1，以便在 extract 中检查是否被命令行覆盖
+        self.cull_from_iter = -1 
         
         # 正则化参数
         self.percent_dense = 0.01
@@ -124,6 +123,7 @@ class OptimizationParams(ParamGroup):
         # 背景点处理参数
         self.bg_start_iter = 500  # 从哪个迭代开始应用背景点处理
         self.set_background_opacity_to_zero = True  # 启用背景高斯点不透明度直接设为0，默认开启
+        self.lambda_bg_opacity = 0.1 # 背景透明度损失权重
         
         # 数据增强相关参数
         self.use_data_augmentation = False  # 是否使用数据增强
@@ -151,8 +151,41 @@ class OptimizationParams(ParamGroup):
             "opacity_cull": "不透明度剪枝阈值 (默认: 0.005)，小于此值的点会被裁剪",
             "cull_from_iter": "从哪个迭代开始进行不透明度裁剪 (默认与 densify_from_iter 相同)", # 新增描述
             "use_data_augmentation": "是否使用数据增强",
+            "lambda_bg_opacity": "Weight for background opacity loss to make background transparent",
+            "iterations": "训练迭代次数",
+            "position_lr_init": "初始位置学习率",
+            "position_lr_final": "最终位置学习率",
+            "position_lr_delay_mult": "位置学习率延迟乘数",
+            "position_lr_max_steps": "位置学习率变化最大步数",
+            "feature_lr": "特征学习率",
+            "opacity_lr": "不透明度学习率",
+            "scaling_lr": "缩放学习率",
+            "rotation_lr": "旋转学习率",
+            "densification_interval": "稠密化间隔",
+            "opacity_reset_interval": "不透明度重置间隔",
+            "densify_from_iter": "从哪个迭代开始稠密化",
+            "densify_until_iter": "到哪个迭代停止稠密化",
+            "densify_grad_threshold": "稠密化梯度阈值",
+            "percent_dense": "初始点云密度的百分比",
+            "use_edge_aware_normal": "启用边缘感知法向损失",
+            "edge_weight_exponent": "边缘权重指数",
+            "lambda_consistency": "法线一致性权重",
+            "use_ms_ssim": "启用多尺度SSIM损失",
+            "lambda_dssim": "SSIM在颜色损失中的权重",
+            "lambda_normal": "法线正则化强度",
+            "lambda_dist": "深度失真正则化强度",
+            "use_depth_convergence": "启用深度收敛损失",
+            "lambda_depth_convergence": "深度收敛损失权重",
+            "conv_start_iter": "开始应用深度收敛损失的迭代次数",
+            "bg_start_iter": "开始应用背景点处理的迭代次数",
+            "set_background_opacity_to_zero": "启用背景高斯点不透明度清零",
+            "opacity_cull": "不透明度剪枝阈值",
+            "cull_from_iter": "从哪个迭代开始进行不透明度裁剪 (默认与 densify_from_iter 相同)", 
+            "use_data_augmentation": "是否使用数据增强",
+            "lambda_bg_opacity": "背景透明度损失权重",
         }
         
+        # 调用基类构造函数，它会处理所有定义的属性
         super().__init__(parser, "Optimization Parameters", descriptions=descriptions)
 
     def extract(self, args):

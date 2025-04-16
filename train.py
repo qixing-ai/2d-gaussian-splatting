@@ -309,8 +309,23 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             convergence_loss = torch.tensor(0.0, device='cuda')
 
+        # 添加背景透明度损失 (仅当 mask 存在时)
+        background_opacity_loss = torch.tensor(0.0, device='cuda')
+        # 直接从 opt 获取权重，因为它应该总是存在 (有默认值)
+        lambda_bg_opacity = opt.lambda_bg_opacity
+
+        if mask is not None and lambda_bg_opacity > 0:
+            render_alpha = render_pkg['rend_alpha'] # 获取渲染的 alpha
+            background_mask = (1 - mask)
+            num_background_pixels = background_mask.sum()
+            if num_background_pixels > 0:
+                # 计算背景区域 alpha 的 L1 损失均值
+                background_opacity_loss = (torch.abs(render_alpha * background_mask)).sum() / num_background_pixels
+            # 可选：如果不需要严格的 L1，可以直接用 .mean()
+            # background_opacity_loss = (render_alpha * background_mask).mean() # 简化版，惩罚背景区域的平均 alpha
+
         # 总损失
-        total_loss = loss + dist_loss + normal_loss + convergence_loss
+        total_loss = loss + dist_loss + normal_loss + convergence_loss + lambda_bg_opacity * background_opacity_loss
         
         # 记录当前视角的loss
         viewpoint_name = viewpoint_cam.image_name
@@ -341,6 +356,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
             ema_conv_for_log = 0.4 * convergence_loss.item() + 0.6 * ema_conv_for_log
+            # 添加背景损失 EMA
+            ema_bg_opacity_for_log = 0.4 * background_opacity_loss.item() + 0.6 * getattr(locals(), 'ema_bg_opacity_for_log', 0.0)
 
             if iteration % 10 == 0:
                 loss_dict = {
@@ -349,6 +366,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # "normal": f"{ema_normal_for_log:.{5}f}", # Removed from progress bar
                     # "conv": f"{ema_conv_for_log:.{5}f}", # Removed from progress bar
                 }
+                # Optionally add bg_opacity to progress bar if lambda > 0
+                if lambda_bg_opacity > 0:
+                    loss_dict["bg_opac"] = f"{ema_bg_opacity_for_log:.{5}f}"
+
                 progress_bar.set_postfix(loss_dict)
 
                 progress_bar.update(10)
@@ -361,7 +382,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/conv_loss', ema_conv_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/dynamic_threshold', dynamic_threshold, iteration)
-                
+                # 记录背景透明度损失到 TensorBoard
+                if lambda_bg_opacity > 0:
+                     tb_writer.add_scalar('train_loss_patches/bg_opacity_loss', ema_bg_opacity_for_log, iteration)
+
                 # 记录当前视角的loss
                 tb_writer.add_scalar(f'viewpoint_losses/{viewpoint_name}', current_loss, iteration)
                 
