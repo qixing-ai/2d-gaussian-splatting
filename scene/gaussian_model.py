@@ -288,10 +288,8 @@ class GaussianModel:
         return optimizable_tensors
 
     def prune_points(self, mask):
-        # 记录裁剪前的点数，用于调试
-        points_before = self.get_xyz.shape[0]
-        
         valid_points_mask = ~mask
+        print(f"Pruning {mask.sum().item()} points out of {mask.shape[0]}. Remaining points: {valid_points_mask.sum().item()}")
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
@@ -301,56 +299,10 @@ class GaussianModel:
         self._scaling = optimizable_tensors["scaling"]
         self._rotation = optimizable_tensors["rotation"]
 
-        # 确保梯度累积器和分母大小与点云大小一致
-        if self.xyz_gradient_accum.shape[0] != self.get_xyz.shape[0]:
-            # 创建新的梯度累积器
-            new_grad_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-            # 只复制有效范围内的梯度累积数据
-            valid_range = min(self.xyz_gradient_accum.shape[0], self.get_xyz.shape[0])
-            if valid_range > 0:
-                # 处理valid_points_mask可能超出范围的情况
-                valid_mask_range = min(valid_points_mask.sum().item(), valid_range)
-                if valid_mask_range > 0:
-                    new_grad_accum[:valid_mask_range] = self.xyz_gradient_accum[valid_points_mask][:valid_mask_range]
-            self.xyz_gradient_accum = new_grad_accum
-        else:
-            self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
+        self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
-        # 确保分母大小与点云大小一致
-        if self.denom.shape[0] != self.get_xyz.shape[0]:
-            # 创建新的分母
-            new_denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
-            # 只复制有效范围内的分母数据
-            valid_range = min(self.denom.shape[0], self.get_xyz.shape[0])
-            if valid_range > 0:
-                # 处理valid_points_mask可能超出范围的情况
-                valid_mask_range = min(valid_points_mask.sum().item(), valid_range)
-                if valid_mask_range > 0:
-                    new_denom[:valid_mask_range] = self.denom[valid_points_mask][:valid_mask_range]
-            self.denom = new_denom
-        else:
-            self.denom = self.denom[valid_points_mask]
-
-        # 更新其他数据大小
-        if self.max_radii2D.shape[0] != self.get_xyz.shape[0]:
-            # 创建新的最大半径
-            new_max_radii = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-            # 只复制有效范围内的最大半径数据
-            valid_range = min(self.max_radii2D.shape[0], self.get_xyz.shape[0])
-            if valid_range > 0:
-                # 处理valid_points_mask可能超出范围的情况
-                valid_mask_range = min(valid_points_mask.sum().item(), valid_range)
-                if valid_mask_range > 0:
-                    new_max_radii[:valid_mask_range] = self.max_radii2D[valid_points_mask][:valid_mask_range]
-            self.max_radii2D = new_max_radii
-        else:
-            self.max_radii2D = self.max_radii2D[valid_points_mask]
-        
-        # 打印裁剪信息
-        points_after = self.get_xyz.shape[0]
-        if points_before != points_after:
-            points_removed = points_before - points_after
-            print(f"裁剪: {points_before} -> {points_after} (移除了 {points_removed} 点)")
+        self.denom = self.denom[valid_points_mask]
+        self.max_radii2D = self.max_radii2D[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -434,8 +386,7 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
-        prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
-        self.prune_points(prune_filter)
+    
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # 确保梯度张量的大小与点云大小匹配
@@ -474,59 +425,6 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
-        # 计算梯度
-        grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
-
-        # 记录裁剪前的点数，用于调试
-        points_before = self.get_xyz.shape[0]
-        
-        # 先执行裁剪操作，移除不透明度低的点，但设置一个更低的阈值
-        # 更保守的裁剪，降低阈值至原来的10%（之前是30%）
-        adjusted_min_opacity = min_opacity * 0.1
-        prune_mask = (self.get_opacity < adjusted_min_opacity).squeeze()
-        
-        if max_screen_size:
-            # 进一步增加大尺寸点的容忍度，降低裁剪数量
-            big_points_vs = self.max_radii2D > (max_screen_size * 3.0)  # 增加到3.0倍容忍度（之前是2.0）
-            big_points_ws = self.get_scaling.max(dim=1).values > 0.25 * extent  # 从0.2提高到0.25
-            prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        
-        # 去掉5%限制，直接使用阈值裁剪
-        total_points = self.get_xyz.shape[0]
-        points_to_prune = prune_mask.sum().item()
-        print(f"使用阈值裁剪: 将移除 {points_to_prune} 点 ({(points_to_prune/total_points)*100:.2f}%)")
-        
-        # 执行裁剪
-        self.prune_points(prune_mask)
-        
-        # 记录裁剪后的点数，用于调试
-        points_after = self.get_xyz.shape[0]
-        points_removed = points_before - points_after
-        print(f"稠密化裁剪: {points_before} -> {points_after} (移除了 {points_removed} 点, {(points_removed/points_before)*100:.2f}%)")
-        
-        # 重要：确保梯度张量与当前点云大小匹配
-        if grads.shape[0] != points_after:
-            print(f"调整梯度张量大小 - 裁剪前: {grads.shape[0]}, 裁剪后: {points_after}")
-            # 创建新的梯度张量，大小与当前点云匹配
-            new_grads = torch.zeros((points_after, grads.shape[1]), device="cuda", dtype=grads.dtype)
-            # 复制有效范围内的梯度
-            valid_range = min(grads.shape[0], points_after)
-            if valid_range > 0:
-                new_grads[:valid_range] = grads[:valid_range]
-            grads = new_grads
-        
-        # 然后执行稠密化和分裂操作
-        self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
-
-        # 打印最终点数
-        final_points = self.get_xyz.shape[0]
-        if final_points != points_after:
-            print(f"稠密化后: {points_after} -> {final_points} (添加了 {final_points-points_after} 点)")
-        
-        torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         # 原始2DGS方法 - 使用梯度范数
@@ -539,34 +437,4 @@ class GaussianModel:
         
         self.denom[update_filter] += 1
         
-    def set_background_opacity_to_zero(self, foreground_mask, visibility_filter=None, bg_opacity_factor=0.0):
-        """
-        将背景区域的高斯点不透明度直接设置为0
-        
-        Args:
-            foreground_mask: 前景掩码 [B,1,H,W]，值为1表示前景，0表示背景
-            visibility_filter: 可见性过滤器，指定哪些高斯点需要处理
-            bg_opacity_factor: 忽略此参数，保持为0以向后兼容
-        """
-        # 当前实现无法直接通过前景掩码标识哪些高斯点位于背景区域
-        # 所以我们只能处理可见高斯点，即visibility_filter标识的点
-        
-        # 如果没有提供可见性过滤器，则不处理任何点
-        if visibility_filter is None or not visibility_filter.any():
-            return False, 0
-            
-        # 获取当前不透明度
-        opacity = self.get_opacity
-        
-        # 创建新的不透明度张量，所有可见高斯点不透明度设为0
-        new_opacity = opacity.clone()
-        new_opacity[visibility_filter] = 0.0
-        
-        # 更新优化器中的不透明度值
-        opacities_new = self.inverse_opacity_activation(new_opacity)
-        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
-        self._opacity = optimizable_tensors["opacity"]
-        
-        # 返回处理状态和处理的点数量
-        num_processed = visibility_filter.sum().item()
-        return True, num_processed
+    
