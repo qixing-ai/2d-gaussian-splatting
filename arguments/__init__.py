@@ -85,7 +85,7 @@ class PipelineParams(ParamGroup):
         super().__init__(parser, "Pipeline Parameters", descriptions=descriptions)
 
 class OptimizationParams(ParamGroup):
-    def __init__(self, parser, lr=0.00016, iterations=30_000):
+    def __init__(self, parser, lr=0.00016, iterations=14_000):
         # 定义所有优化参数为类属性
         self.iterations = iterations
         self.position_lr_init = lr
@@ -101,7 +101,7 @@ class OptimizationParams(ParamGroup):
         self.densification_interval = 100
         self.opacity_reset_interval = 1000
         self.densify_from_iter = 500
-        self.densify_until_iter = 13_000
+        self.densify_until_iter = 12_000
         self.densify_grad_threshold = 0.0001
         
         # 裁剪参数 (新添加)
@@ -113,7 +113,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0005
         self.lambda_normal = 0.1
-        self.opacity_cull = 0.05
+        self.opacity_cull = 0.1
         
         # 深度收敛损失参数
         self.use_depth_convergence = True  # 是否启用深度收敛损失
