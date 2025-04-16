@@ -190,10 +190,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration % 10 == 0:
                 loss_dict = {
                     "Loss": f"{ema_loss_for_log:.{5}f}",
-                    "distort": f"{ema_dist_for_log:.{5}f}",
-                    "normal": f"{ema_normal_for_log:.{5}f}",
-                    "conv": f"{ema_conv_for_log:.{5}f}",
-                    "Points": f"{len(gaussians.get_xyz)}"
+                    # "distort": f"{ema_dist_for_log:.{5}f}", # Removed from progress bar
+                    # "normal": f"{ema_normal_for_log:.{5}f}", # Removed from progress bar
+                    # "conv": f"{ema_conv_for_log:.{5}f}", # Removed from progress bar
                 }
                 progress_bar.set_postfix(loss_dict)
 
@@ -231,8 +230,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if tb_writer is not None:
                     # 构建PLY文件路径
                     ply_path = os.path.join(dataset.model_path, "point_cloud", f"iteration_{iteration}", "point_cloud.ply")
-                    # 将PLY文件添加到TensorBoard
-                    add_ply_to_tensorboard(tb_writer, f"点云/迭代_{iteration}", ply_path, global_step=iteration)
+                    # 检查文件是否存在且大小大于0
+                    if os.path.exists(ply_path) and os.path.getsize(ply_path) > 0:
+                        # 将PLY文件添加到TensorBoard
+                        add_ply_to_tensorboard(tb_writer, f"点云/迭代_{iteration}", ply_path, global_step=iteration)
+                    else:
+                        print(f"\n[ITER {iteration}] PLY 文件 {ply_path} 为空或不存在，跳过 TensorBoard 可视化。")
 
             # Densification
             if iteration < opt.densify_until_iter:
@@ -240,7 +243,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
                 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     # 计算梯度
                     grads = gaussians.xyz_gradient_accum / gaussians.denom
                     grads[grads.isnan()] = 0.0
@@ -250,8 +252,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     gaussians.densify_and_split(grads, opt.densify_grad_threshold, scene.cameras_extent)
 
                     # 裁剪低不透明度的点
-                    opacity_mask = (gaussians.get_opacity < opt.opacity_cull).squeeze()
-                    gaussians.prune_points(opacity_mask)
+                    if iteration > opt.cull_from_iter:
+                        opacity_mask = (gaussians.get_opacity < opt.opacity_cull).squeeze()
+                        gaussians.prune_points(opacity_mask)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
@@ -380,7 +383,7 @@ if __name__ == "__main__":
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 12_000])
     # 每1000次迭代保存一次点云并在TensorBoard中可视化
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[i for i in range(1000, 30001, 1000)])
     parser.add_argument("--quiet", action="store_true")

@@ -106,6 +106,9 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 13_000
         self.densify_grad_threshold = 0.0001
         
+        # 裁剪参数 (新添加)
+        self.cull_from_iter = 3000
+        
         # 正则化参数
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
@@ -146,10 +149,18 @@ class OptimizationParams(ParamGroup):
             "bg_start_iter": "从哪个迭代开始应用背景点处理 (默认: 500)",
             "set_background_opacity_to_zero": "启用背景高斯点不透明度清零 (默认开启)",
             "opacity_cull": "不透明度剪枝阈值 (默认: 0.005)，小于此值的点会被裁剪",
+            "cull_from_iter": "从哪个迭代开始进行不透明度裁剪 (默认与 densify_from_iter 相同)", # 新增描述
             "use_data_augmentation": "是否使用数据增强",
         }
         
         super().__init__(parser, "Optimization Parameters", descriptions=descriptions)
+
+    def extract(self, args):
+        g = super().extract(args)
+        # Assign default value for cull_from_iter if it wasn't set via command line
+        if g.cull_from_iter == -1:
+            g.cull_from_iter = g.densify_from_iter
+        return g
 
 def get_combined_args(parser : ArgumentParser):
     cmdlne_string = sys.argv[1:]
