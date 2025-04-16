@@ -171,6 +171,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
     ema_conv_for_log = 0.0  # 用于记录深度收敛损失
+    ema_bg_opacity_for_log = 0.0 # 用于记录背景透明度损失
+    ema_gt_normal_for_log = 0.0 # 用于记录真值法线损失
     
     # 添加视角loss记录
     viewpoint_losses = {}  # 记录每个视角的loss
@@ -270,6 +272,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
         # 深度收敛损失权重设置
         lambda_conv = opt.lambda_depth_convergence if hasattr(opt, 'use_depth_convergence') and opt.use_depth_convergence and iteration > opt.conv_start_iter else 0.0
+        # 背景透明度损失权重
+        lambda_bg_opacity = opt.lambda_bg_opacity
+        # 真值法线损失权重 (从 opt 获取，假设已添加)
+        lambda_gt_normal = opt.lambda_gt_normal
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal = render_pkg['rend_normal']
@@ -321,11 +327,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if num_background_pixels > 0:
                 # 计算背景区域 alpha 的 L1 损失均值
                 background_opacity_loss = (torch.abs(render_alpha * background_mask)).sum() / num_background_pixels
-            # 可选：如果不需要严格的 L1，可以直接用 .mean()
-            # background_opacity_loss = (render_alpha * background_mask).mean() # 简化版，惩罚背景区域的平均 alpha
+          
+
+        # 计算真值法线损失
+        gt_normal_loss = torch.tensor(0.0, device='cuda')
+        if lambda_gt_normal > 0 and hasattr(viewpoint_cam, 'gt_normal') and viewpoint_cam.gt_normal is not None:
+            gt_normal_map = viewpoint_cam.gt_normal.cuda() # [3, H, W], 假设范围是 [-1, 1]
+            if mask is not None:
+                # 应用 mask
+                pixel_count = mask.sum()
+                if pixel_count > 0:
+                    # 计算前景区域的余弦相似度损失 (1 - cos(theta))
+                    cos_sim = torch.sum(surf_normal * gt_normal_map, dim=0, keepdim=True) # [1, H, W]
+                    # 应用 mask 并计算平均损失
+                    gt_normal_loss = lambda_gt_normal * (mask * (1.0 - cos_sim)).sum() / pixel_count
+                   
+            else:
+                 # 如果没有 mask，计算整个图像的损失
+                 gt_normal_loss = lambda_gt_normal * (1.0 - torch.sum(surf_normal * gt_normal_map, dim=0)).mean()
 
         # 总损失
-        total_loss = loss + dist_loss + normal_loss + convergence_loss + lambda_bg_opacity * background_opacity_loss
+        total_loss = loss + dist_loss + normal_loss + convergence_loss + lambda_bg_opacity * background_opacity_loss + gt_normal_loss
         
         # 记录当前视角的loss
         viewpoint_name = viewpoint_cam.image_name
@@ -358,18 +380,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_conv_for_log = 0.4 * convergence_loss.item() + 0.6 * ema_conv_for_log
             # 添加背景损失 EMA
             ema_bg_opacity_for_log = 0.4 * background_opacity_loss.item() + 0.6 * getattr(locals(), 'ema_bg_opacity_for_log', 0.0)
+            # 添加真值法线损失 EMA
+            ema_gt_normal_for_log = 0.4 * gt_normal_loss.item() + 0.6 * ema_gt_normal_for_log
 
             if iteration % 10 == 0:
                 loss_dict = {
-                    "Loss": f"{ema_loss_for_log:.{5}f}",
-                    # "distort": f"{ema_dist_for_log:.{5}f}", # Removed from progress bar
-                    # "normal": f"{ema_normal_for_log:.{5}f}", # Removed from progress bar
-                    # "conv": f"{ema_conv_for_log:.{5}f}", # Removed from progress bar
+                    "Loss": f"{ema_loss_for_log:.{5}f}"
                 }
-                # Optionally add bg_opacity to progress bar if lambda > 0
-                if lambda_bg_opacity > 0:
-                    loss_dict["bg_opac"] = f"{ema_bg_opacity_for_log:.{5}f}"
-
+               
                 progress_bar.set_postfix(loss_dict)
 
                 progress_bar.update(10)
@@ -385,6 +403,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # 记录背景透明度损失到 TensorBoard
                 if lambda_bg_opacity > 0:
                      tb_writer.add_scalar('train_loss_patches/bg_opacity_loss', ema_bg_opacity_for_log, iteration)
+                # 记录真值法线损失到 TensorBoard
+                if lambda_gt_normal > 0:
+                     tb_writer.add_scalar('train_loss_patches/gt_normal_loss', ema_gt_normal_for_log, iteration)
+                # 记录真值法线损失权重到 TensorBoard
+                tb_writer.add_scalar('hyperparameters/lambda_gt_normal', lambda_gt_normal, iteration)
 
                 # 记录当前视角的loss
                 tb_writer.add_scalar(f'viewpoint_losses/{viewpoint_name}', current_loss, iteration)
@@ -499,6 +522,8 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    # 添加真值法线图路径参数
+    parser.add_argument("--gt_normal_path", type=str, default=None, help="Path to the directory containing ground truth normal maps.")
     
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
