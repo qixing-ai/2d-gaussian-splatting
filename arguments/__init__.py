@@ -111,7 +111,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.2
         self.lambda_dist = 0.0005
         self.lambda_normal = 0.1
-        self.opacity_cull = 0.005
+        self.opacity_cull = 0.00005
         
         # 深度收敛损失参数
         self.use_depth_convergence = True  # 是否启用深度收敛损失

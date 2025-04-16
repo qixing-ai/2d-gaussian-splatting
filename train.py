@@ -11,7 +11,6 @@ from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image, colormap
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-import matplotlib.pyplot as plt
 import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -90,8 +89,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             print(f"Skipping fully transparent image: {viewpoint_cam.image_name} (Iteration {iteration})")
             # 如果弹出此相机后堆栈为空，则重新填充
             # （注意：现有逻辑已在每次迭代开始时检查并填充空堆栈）
-            # if not viewpoint_stack:
-            #      viewpoint_stack = scene.getTrainCameras().copy()
             continue # 跳到下一次迭代
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
@@ -121,8 +118,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
         # 深度收敛损失权重设置
         lambda_conv = opt.lambda_depth_convergence if hasattr(opt, 'use_depth_convergence') and opt.use_depth_convergence and iteration > opt.conv_start_iter else 0.0
-        # 背景损失权重设置
-        lambda_bg = 0.0
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal = render_pkg['rend_normal']
@@ -244,52 +239,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             # Densification
             if iteration < opt.densify_until_iter:
-                # 1. 首先收集梯度统计
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
                 
-                # 2. 然后设置背景点透明度为0（只从2000步开始）
-                if hasattr(opt, 'set_background_opacity_to_zero') and opt.set_background_opacity_to_zero and iteration > opt.bg_start_iter and iteration >= 100:
-                    # 检查图像是否有alpha通道或单独的alpha掩码
-                    has_mask = viewpoint_cam.gt_alpha_mask is not None
-                    
-                    # if has_mask:
-                    #     # 使用单独保存的alpha掩码
-                    #     print(f"使用单独的alpha掩码，形状: {viewpoint_cam.gt_alpha_mask.shape}")
-                    #     foreground_mask = viewpoint_cam.gt_alpha_mask
-                    #     success, num_points = gaussians.set_background_opacity_to_zero(foreground_mask, visibility_filter)
-                    #     print(f"  [背景点处理(使用gt_alpha_mask)] 迭代: {iteration}, 成功: {success}")
-                    #     print(f"  处理了 {num_points} 个背景高斯点的不透明度")
-                
-                # 3. 执行统一的裁剪策略（保持原始方式）
-                # 每100次迭代执行一次裁剪
-                if iteration % 100 == 0:
-                    # 使用单一的阈值，适当折中各种阈值
-                    transparent_mask = (gaussians.get_opacity < 0.0002).squeeze()
-                    if transparent_mask.any():
-                        # 计算要删除的点数和总点数
-                        points_to_delete = transparent_mask.sum().item()
-                        total_points = gaussians.get_xyz.shape[0]
-                        
-                        # 使用原始的裁剪方式（带5%限制）
-                        if points_to_delete > 0.05 * total_points:
-                            # 只删除不透明度最低的点
-                            opacities = gaussians.get_opacity.squeeze()
-                            values, indices = torch.sort(opacities)
-                            max_to_delete = int(0.05 * total_points)
-                            indices_to_delete = indices[:max_to_delete]
-                            delete_mask = torch.zeros_like(opacities, dtype=torch.bool)
-                            delete_mask[indices_to_delete] = True
-                            
-                            gaussians.prune_points(delete_mask)
-                            print(f"  [透明点剪枝] 迭代: {iteration}")
-                            print(f"  原计划删除 {points_to_delete} 点，实际删除 {max_to_delete} 点")
-                        else:
-                            gaussians.prune_points(transparent_mask)
-                            print(f"  [透明点剪枝] 迭代: {iteration}")
-                            print(f"  已删除 {transparent_mask.sum().item()} 个透明点")
-
-                # 4. 执行稠密化操作（保持原始方式）
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     # 恢复使用原始的密集化方法
@@ -337,8 +289,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
                     if do_training and ((iteration < int(opt.iterations)) or not keep_alive):
                         break
-                except Exception as e:
-                    # raise e
+                except Exception:
+                    # 移除 'as e' 和注释掉的 'raise e'
                     network_gui.conn = None
 
 def prepare_output_and_logger(args):    
@@ -422,64 +374,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
 
         torch.cuda.empty_cache()
-
-def save_mask_visualization(mask, gt_image, iteration, output_dir, name="background_mask"):
-    """
-    保存掩码可视化图像，用于调试背景/前景分割
-    
-    Args:
-        mask: 掩码张量 [H, W]
-        gt_image: 原始图像 [3, H, W]
-        iteration: 当前迭代次数
-        output_dir: 输出目录
-        name: 图像名称前缀
-    """
-    # 配置matplotlib支持中文
-    import matplotlib
-    # 使用更通用的字体，避免找不到特定字体的警告
-    matplotlib.rcParams['font.family'] = ['DejaVu Sans', 'sans-serif']
-    matplotlib.rcParams['axes.unicode_minus'] = False
-    
-    # 创建输出目录
-    viz_dir = os.path.join(output_dir, "mask_viz")
-    os.makedirs(viz_dir, exist_ok=True)
-    
-    # 准备数据
-    mask_np = mask.detach().cpu().numpy()
-    image_np = gt_image.permute(1, 2, 0).detach().cpu().numpy()
-    
-    # 创建图像
-    plt.figure(figsize=(12, 5))
-    
-    # 原始图像
-    plt.subplot(1, 3, 1)
-    plt.imshow(image_np)
-    plt.title("Original Image")
-    plt.axis("off")
-    
-    # 掩码图像
-    plt.subplot(1, 3, 2)
-    plt.imshow(mask_np, cmap='gray')
-    plt.title(f"{name.replace('_', ' ').title()}")
-    plt.axis("off")
-    
-    # 叠加显示
-    plt.subplot(1, 3, 3)
-    overlay = np.copy(image_np)
-    mask_rgb = np.stack([mask_np] * 3, axis=2)  # 转为3通道
-    # 在掩码区域添加蓝色半透明覆盖
-    overlay = overlay * (1 - mask_rgb * 0.7) + mask_rgb * np.array([0, 0, 0.8]) * 0.7
-    plt.imshow(overlay)
-    plt.title("Overlay")
-    plt.axis("off")
-    
-    # 保存图像
-    plt.tight_layout()
-    output_path = os.path.join(viz_dir, f"{name}_{iteration:06d}.png")
-    plt.savefig(output_path, dpi=150)
-    plt.close()
-    
-    return output_path
 
 if __name__ == "__main__":
     # Set up command line argument parser
