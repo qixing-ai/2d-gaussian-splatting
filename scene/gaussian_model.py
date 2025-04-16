@@ -399,7 +399,6 @@ class GaussianModel:
         
         # 确保梯度张量大小与点云大小匹配
         if grads.shape[0] != n_init_points:
-            print(f"分裂操作 - 调整梯度张量大小: {grads.shape[0]} -> {n_init_points}")
             # 创建一个合适大小的填充梯度张量
             padded_grad = torch.zeros((n_init_points), device="cuda")
             # 只复制有效范围内的梯度数据

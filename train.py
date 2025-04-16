@@ -86,9 +86,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # 如果图像完全透明，则打印信息并跳过此迭代
         if is_fully_transparent:
-            print(f"Skipping fully transparent image: {viewpoint_cam.image_name} (Iteration {iteration})")
-            # 如果弹出此相机后堆栈为空，则重新填充
-            # （注意：现有逻辑已在每次迭代开始时检查并填充空堆栈）
             continue # 跳到下一次迭代
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
