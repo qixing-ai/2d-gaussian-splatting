@@ -26,18 +26,19 @@ class ParamGroup:
                 shorthand = True
                 key = key[1:]
             t = type(value)
+            actual_type = t if t != type(None) else str 
             value = value if not fill_none else None
             help_text = descriptions.get(key, None)  # 获取描述
             if shorthand:
                 if t == bool:
                     group.add_argument("--" + key, ("-" + key[0:1]), default=value, action="store_true", help=help_text)
                 else:
-                    group.add_argument("--" + key, ("-" + key[0:1]), default=value, type=t, help=help_text)
+                    group.add_argument("--" + key, ("-" + key[0:1]), default=value, type=actual_type, help=help_text)
             else:
                 if t == bool:
                     group.add_argument("--" + key, default=value, action="store_true", help=help_text)
                 else:
-                    group.add_argument("--" + key, default=value, type=t, help=help_text)
+                    group.add_argument("--" + key, default=value, type=actual_type, help=help_text)
 
     def extract(self, args):
         group = GroupParams()
@@ -57,6 +58,8 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
+        self.gt_normal_path = None
+        self.gt_normal_suffix = ".png"
         descriptions = {
             "sh_degree": "球谐系数的度数",
             "source_path": "数据集路径",
@@ -64,6 +67,8 @@ class ModelParams(ParamGroup):
             "images": "图像文件夹名称",
             "resolution": "图像分辨率，-1表示使用原始分辨率",
             "white_background": "使用白色背景",
+            "gt_normal_path": "包含真值法线图的目录路径 (可选)",
+            "gt_normal_suffix": "真值法线图的文件后缀名 (例如 .png, _normal.png)",
         }
         super().__init__(parser, "Loading Parameters", sentinel, descriptions=descriptions)
 

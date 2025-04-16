@@ -16,6 +16,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrixShift, fov2f
 
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
+                 gt_normal,
                  image_name, uid, principal_point_ndc,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda",
                  distortion_params=None, camera_model="PINHOLE"
@@ -31,6 +32,7 @@ class Camera(nn.Module):
         self.image_name = image_name
         self.camera_model = camera_model
         self.distortion_params = distortion_params
+        self.gt_normal = gt_normal
 
         try:
             self.data_device = torch.device(data_device)
@@ -49,6 +51,9 @@ class Camera(nn.Module):
         else:
             # self.original_image *= torch.ones((1, self.image_height, self.image_width), device=self.data_device) # do we need this?
             self.gt_alpha_mask = None
+
+        if self.gt_normal is not None:
+            self.gt_normal = self.gt_normal.to(self.data_device)
 
         self.zfar = 100.0
         self.znear = 0.01

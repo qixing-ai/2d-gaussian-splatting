@@ -8,146 +8,29 @@ from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr, render_net_image, colormap
+from utils.image_utils import render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import numpy as np
+# 从 utils.tensorboard_utils 导入函数
+from utils.tensorboard_utils import training_report
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 
-# 导入ply可视化工具
-# from utils.tensorboard_utils import add_ply_to_tensorboard # Removed import
+# 移除 ply 可视化工具的导入（已被注释）
 
-def log_tb_image(tb_writer, tag_prefix, image_name, image_tensor, global_step, cmap=None, normalize=True):
-    """辅助函数，用于将图像记录到 TensorBoard"""
-    if tb_writer is None:
-        return
-    
-    processed_image = image_tensor.detach().cpu()
-    
-    # 如果需要，进行归一化
-    if normalize and processed_image.numel() > 0: # 仅在张量非空时进行归一化
-        norm = processed_image.max()
-        if norm > 1e-6: # 避免除以零或非常小的值
-            processed_image = processed_image / norm
-        else:
-            processed_image.zero_() # 如果最大值接近零，则将图像设为全黑
+# 移除 log_tb_image 函数定义
+# def log_tb_image(tb_writer, tag_prefix, image_name, image_tensor, global_step, cmap=None, normalize=True):
+#     ...
 
-    # 如果指定了 colormap，则应用它
-    if cmap is not None:
-        # 确保输入是单通道图像
-        if processed_image.shape[0] != 1:
-             print(f"警告：Colormap 只能应用于单通道图像，但收到了 {processed_image.shape[0]} 通道。跳过 Colormap 应用。")
-        elif processed_image.numel() > 0: # 仅在张量非空时应用 colormap
-             # 将张量数据转换为 NumPy 数组，并传递设备信息
-             image_np = processed_image.cpu().numpy()[0] # 移到 CPU 并转 NumPy
-             processed_image = colormap(image_np, cmap=cmap, device=processed_image.device) # 传递原始设备
-        else:
-             processed_image = torch.zeros((3, processed_image.shape[-2], processed_image.shape[-1]), dtype=torch.uint8) # 创建一个空的彩色图像占位符
-    else:
-        # 确保图像是 3 通道 (RGB)
-        if processed_image.shape[0] == 1:
-            processed_image = processed_image.repeat(3, 1, 1) # 灰度图转 RGB
-
-    # 添加批次维度 (N)
-    if processed_image.dim() == 3:
-        processed_image = processed_image[None] # [C, H, W] -> [N, C, H, W]
-
-    # 确保数据类型是适合 add_images 的类型 (通常是 float 或 uint8)
-    if processed_image.dtype != torch.uint8 and processed_image.dtype != torch.float32:
-         processed_image = processed_image.float() # 转换为 float
-
-    # 检查形状是否有效
-    if processed_image.dim() != 4 or processed_image.shape[1] not in [1, 3, 4]:
-        print(f"警告：跳过 TensorBoard 记录，图像形状无效: {processed_image.shape} for tag {tag_prefix}_view_{image_name}")
-        return
-        
-    try:
-        tb_writer.add_images(f"{tag_prefix}_view_{image_name}", processed_image, global_step=global_step)
-    except Exception as e:
-        print(f"记录 TensorBoard 图像时出错 ({tag_prefix}_view_{image_name}): {e}")
-        print(f"图像形状: {processed_image.shape}, 数据类型: {processed_image.dtype}, Min: {processed_image.min()}, Max: {processed_image.max()}")
-
-
-@torch.no_grad()
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss_func, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs): # 注意 l1_loss -> l1_loss_func
-    if tb_writer:
-        tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
-        tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
-        tb_writer.add_scalar('iter_time', elapsed, iteration)
-        tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
-
-    # Report test and samples of training set
-    if iteration in testing_iterations:
-        torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
-
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
-                    image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    
-                    # Log images to TensorBoard (first 5 views)
-                    if tb_writer and (idx < 5):
-                        view_name = viewpoint.image_name
-                        log_tb_image(tb_writer, f"{config['name']}/Render", view_name, image, iteration, normalize=False)
-
-                        # Log depth map
-                        if "surf_depth" in render_pkg:
-                            depth = render_pkg["surf_depth"]
-                            # 检查深度图是否有效 (非空且有正值)
-                            if depth.numel() > 0 and depth.max() > 1e-6:
-                                log_tb_image(tb_writer, f"{config['name']}/Depth", view_name, depth, iteration, cmap='turbo', normalize=True)
-                            else:
-                                print(f"警告：迭代 {iteration}, 视角 {view_name} 的深度图无效或全黑，跳过记录。")
-
-
-                        # Log normal maps (rendered and surface)
-                        if "rend_normal" in render_pkg:
-                             log_tb_image(tb_writer, f"{config['name']}/Normal_Rendered", view_name, render_pkg["rend_normal"] * 0.5 + 0.5, iteration, normalize=False)
-                        if "surf_normal" in render_pkg:
-                             log_tb_image(tb_writer, f"{config['name']}/Normal_Surface", view_name, render_pkg["surf_normal"] * 0.5 + 0.5, iteration, normalize=False)
-                        
-                        # Log alpha map
-                        if "rend_alpha" in render_pkg:
-                            log_tb_image(tb_writer, f"{config['name']}/Alpha", view_name, render_pkg["rend_alpha"], iteration, normalize=False)
-                            
-                        # Log distortion map
-                        if "rend_dist" in render_pkg:
-                            dist = render_pkg["rend_dist"]
-                             # 检查失真图是否有效
-                            if dist.numel() > 0:
-                                log_tb_image(tb_writer, f"{config['name']}/Distortion", view_name, dist, iteration, cmap='viridis', normalize=True) # 使用 viridis colormap
-                            else:
-                                print(f"警告：迭代 {iteration}, 视角 {view_name} 的失真图无效，跳过记录。")
-
-
-                        # Log ground truth only on the first testing iteration
-                        if iteration == testing_iterations[0]:
-                            log_tb_image(tb_writer, f"{config['name']}/Ground_Truth", view_name, gt_image, iteration, normalize=False)
-
-                    # Calculate metrics
-                    # 使用传入的 l1_loss 函数
-                    l1_test += l1_loss_func(image, gt_image).mean().double() 
-                    psnr_test += psnr(image, gt_image).mean().double()
-
-                # Average metrics over views
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])
-                print(f"\n[ITER {iteration}] Evaluating {config['name']}: L1 {l1_test:.{5}f} PSNR {psnr_test:.{5}f}")
-                if tb_writer:
-                    tb_writer.add_scalar(f"{config['name']}/loss_viewpoint - l1_loss", l1_test, iteration)
-                    tb_writer.add_scalar(f"{config['name']}/loss_viewpoint - psnr", psnr_test, iteration)
-
-        torch.cuda.empty_cache()
+# 移除 training_report 函数定义
+# @torch.no_grad()
+# def training_report(tb_writer, iteration, Ll1, loss, l1_loss_func, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+#     ...
 
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
     first_iter = 0
@@ -331,20 +214,32 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # 计算真值法线损失
         gt_normal_loss = torch.tensor(0.0, device='cuda')
-        if lambda_gt_normal > 0 and hasattr(viewpoint_cam, 'gt_normal') and viewpoint_cam.gt_normal is not None:
-            gt_normal_map = viewpoint_cam.gt_normal.cuda() # [3, H, W], 假设范围是 [-1, 1]
-            if mask is not None:
-                # 应用 mask
-                pixel_count = mask.sum()
-                if pixel_count > 0:
-                    # 计算前景区域的余弦相似度损失 (1 - cos(theta))
-                    cos_sim = torch.sum(surf_normal * gt_normal_map, dim=0, keepdim=True) # [1, H, W]
-                    # 应用 mask 并计算平均损失
-                    gt_normal_loss = lambda_gt_normal * (mask * (1.0 - cos_sim)).sum() / pixel_count
-                   
-            else:
-                 # 如果没有 mask，计算整个图像的损失
-                 gt_normal_loss = lambda_gt_normal * (1.0 - torch.sum(surf_normal * gt_normal_map, dim=0)).mean()
+        if lambda_gt_normal > 0: # Check if weight is positive first
+            # <<< 删除下面的调试打印块 >>>
+            # print(f"[Debug Iter {iteration}] Checking gt_normal for {viewpoint_cam.image_name}:")
+            # print(f"  - hasattr(viewpoint_cam, 'gt_normal'): {hasattr(viewpoint_cam, 'gt_normal')}")
+            # if hasattr(viewpoint_cam, 'gt_normal'):
+            #     print(f"  - viewpoint_cam.gt_normal is None: {viewpoint_cam.gt_normal is None}")
+            #     if viewpoint_cam.gt_normal is not None:
+            #         # 打印数据类型和形状以获取更多信息
+            #         print(f"  - viewpoint_cam.gt_normal dtype: {viewpoint_cam.gt_normal.dtype}")
+            #         print(f"  - viewpoint_cam.gt_normal shape: {viewpoint_cam.gt_normal.shape}")
+            # <<< 调试打印结束 >>>
+
+            if hasattr(viewpoint_cam, 'gt_normal') and viewpoint_cam.gt_normal is not None:
+                gt_normal_map = viewpoint_cam.gt_normal.cuda() # [3, H, W], 假设范围是 [-1, 1]
+                if mask is not None:
+                    # 应用 mask
+                    pixel_count = mask.sum()
+                    if pixel_count > 0:
+                        # 计算前景区域的余弦相似度损失 (1 - cos(theta))
+                        cos_sim = torch.sum(surf_normal * gt_normal_map, dim=0, keepdim=True) # [1, H, W]
+                        # 应用 mask 并计算平均损失
+                        gt_normal_loss = lambda_gt_normal * (mask * (1.0 - cos_sim)).sum() / pixel_count
+
+                else:
+                     # 如果没有 mask，计算整个图像的损失
+                     gt_normal_loss = lambda_gt_normal * (1.0 - torch.sum(surf_normal * gt_normal_map, dim=0)).mean()
 
         # 总损失
         total_loss = loss + dist_loss + normal_loss + convergence_loss + lambda_bg_opacity * background_opacity_loss + gt_normal_loss
@@ -522,8 +417,6 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
-    # 添加真值法线图路径参数
-    parser.add_argument("--gt_normal_path", type=str, default=None, help="Path to the directory containing ground truth normal maps.")
     
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)

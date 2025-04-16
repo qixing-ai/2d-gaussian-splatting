@@ -13,6 +13,8 @@ from scene.cameras import Camera
 import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
+import os
+from PIL import Image
 
 WARNED = False
 
@@ -48,6 +50,35 @@ def loadCam(args, id, cam_info, resolution_scale):
         loaded_mask = None
         gt_image = resized_image_rgb
 
+    # --- Load Ground Truth Normal ---
+    loaded_normal = None
+    if hasattr(args, 'gt_normal_path') and args.gt_normal_path is not None and hasattr(args, 'gt_normal_suffix'):
+        try:
+            base_name_with_ext = os.path.basename(cam_info.image_name)
+            base_name = os.path.splitext(base_name_with_ext)[0]
+            normal_filename = base_name + args.gt_normal_suffix
+            normal_path = os.path.join(args.gt_normal_path, normal_filename)
+
+            if os.path.exists(normal_path):
+                normal_image = Image.open(normal_path)
+                if normal_image.mode != 'RGB':
+                   try:
+                       normal_image = normal_image.convert('RGB')
+                   except ValueError:
+                       print(f"Warning: Could not convert normal map {normal_path} to RGB. Skipping normal for this view.")
+                       normal_image = None
+
+                if normal_image:
+                    loaded_normal = PILtoTorch(normal_image, resolution)
+                    # Optional: Normalize normal values if needed (e.g., to [-1, 1])
+                    # loaded_normal = (loaded_normal * 2.0) - 1.0
+            else:
+                 pass # 添加 pass 避免空块
+
+        except Exception as e:
+            pass # 添加 pass 避免空块
+    # --- End Load Ground Truth Normal ---
+
     # 获取相机模型类型和畸变参数
     camera_model = getattr(cam_info, 'camera_model', "PINHOLE")
     distortion_params = getattr(cam_info, 'distortion_params', None)
@@ -55,6 +86,7 @@ def loadCam(args, id, cam_info, resolution_scale):
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T,
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY,
                   image=gt_image, gt_alpha_mask=loaded_mask,
+                  gt_normal=loaded_normal,
                   image_name=cam_info.image_name, uid=id,
                   principal_point_ndc=cam_info.principal_point_ndc,
                   data_device=args.data_device,
