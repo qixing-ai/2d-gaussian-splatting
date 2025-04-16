@@ -119,7 +119,7 @@ class OptimizationParams(ParamGroup):
         # 深度收敛损失参数
         self.use_depth_convergence = True  # 是否启用深度收敛损失
         self.lambda_depth_convergence = 0.1  # 深度收敛损失权重
-        self.conv_start_iter = 3000  # 从哪个迭代开始应用深度收敛损失
+        self.conv_start_iter = 1000  # 从哪个迭代开始应用深度收敛损失
         
         # 背景点处理参数
         self.bg_start_iter = 500  # 从哪个迭代开始应用背景点处理
