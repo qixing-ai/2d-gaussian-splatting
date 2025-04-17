@@ -15,6 +15,7 @@ from torch.autograd import Variable
 from math import exp
 from pytorch_msssim import ms_ssim  # 导入多尺度SSIM
 from utils.image_utils import gradient_map # 导入图像梯度计算函数
+from fused_ssim import fused_ssim # 导入 fused_ssim
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -74,29 +75,39 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
-def compute_color_loss(rendered_img, gt_img, lambda_dssim=0.2, use_ms_ssim=True):
+def compute_color_loss(rendered_img, gt_img, lambda_dssim=0.2, use_ms_ssim=True, use_fused_ssim=False):
     """
-    计算颜色损失，支持普通SSIM和多尺度SSIM
-    
+    计算颜色损失，支持 fused_ssim, 多尺度SSIM 和 普通SSIM
+
     Args:
         rendered_img: 渲染图像
         gt_img: 真值图像
         lambda_dssim: SSIM在损失中的权重
-        use_ms_ssim: 是否使用多尺度SSIM
-        
+        use_ms_ssim: 是否使用多尺度SSIM (当 use_fused_ssim 为 False 时生效)
+        use_fused_ssim: 是否使用 fused_ssim (优先级最高)
+
     Returns:
         color_loss: 颜色损失
     """
     l1_loss_val = l1_loss(rendered_img, gt_img)
-    
-    if use_ms_ssim:
+
+    if use_fused_ssim:
+        # 确保 fused_ssim 输入为 [B, C, H, W]
+        if len(rendered_img.shape) == 3:
+            rendered_img_b = rendered_img.unsqueeze(0)
+            gt_img_b = gt_img.unsqueeze(0)
+        else:
+            rendered_img_b = rendered_img
+            gt_img_b = gt_img
+        ssim_loss = 1.0 - fused_ssim(rendered_img_b, gt_img_b, data_range=1.0)
+    elif use_ms_ssim:
         # 确保图像尺寸符合MS-SSIM要求（至少大于48×48）
         if rendered_img.shape[1] >= 48 and rendered_img.shape[2] >= 48:
             # 5个尺度的权重，推荐值
             weights = [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
-            ms_ssim_loss = 1.0 - ms_ssim(rendered_img.unsqueeze(0), 
-                                        gt_img.unsqueeze(0), 
-                                        data_range=1.0, 
+            ms_ssim_loss = 1.0 - ms_ssim(rendered_img.unsqueeze(0),
+                                        gt_img.unsqueeze(0),
+                                        data_range=1.0,
                                         weights=weights)
             ssim_loss = ms_ssim_loss
         else:
@@ -105,7 +116,7 @@ def compute_color_loss(rendered_img, gt_img, lambda_dssim=0.2, use_ms_ssim=True)
     else:
         # 使用普通SSIM
         ssim_loss = 1.0 - ssim(rendered_img, gt_img)
-    
+
     return (1.0 - lambda_dssim) * l1_loss_val + lambda_dssim * ssim_loss
 
 def edge_aware_normal_loss(rendered_normal, gt_rgb, surf_normal, q=4, lambda_consistency=0.5):

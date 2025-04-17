@@ -137,6 +137,7 @@ class OptimizationParams(ParamGroup):
         self.edge_weight_exponent = 4.0
         self.lambda_consistency = 0.5
         self.use_ms_ssim = True
+        self.use_fused_ssim = False
         
         # 为参数添加帮助信息
         descriptions = {
@@ -144,6 +145,7 @@ class OptimizationParams(ParamGroup):
             "edge_weight_exponent": "边缘权重指数q (默认: 4.0)，控制边缘敏感度",
             "lambda_consistency": "法线一致性权重 (默认: 0.5)，控制原始法线一致性损失的权重",
             "use_ms_ssim": "启用多尺度SSIM损失，提升多视角一致性",
+            "use_fused_ssim": "启用fused_ssim损失 (比ms_ssim更快，但可能效果略差，优先级高于ms_ssim)",
             "lambda_dssim": "SSIM在颜色损失中的权重 (默认: 0.2)",
             "lambda_normal": "法线正则化强度 (默认: 0.05)",
             "lambda_dist": "深度失真正则化强度 (默认: 0.0)",
@@ -153,7 +155,7 @@ class OptimizationParams(ParamGroup):
             "bg_start_iter": "从哪个迭代开始应用背景点处理 (默认: 500)",
             "set_background_opacity_to_zero": "启用背景高斯点不透明度清零 (默认开启)",
             "opacity_cull": "不透明度剪枝阈值 (默认: 0.005)，小于此值的点会被裁剪",
-            "cull_from_iter": "从哪个迭代开始进行不透明度裁剪 (默认与 densify_from_iter 相同)", # 新增描述
+            "cull_from_iter": "从哪个迭代开始进行不透明度裁剪 (默认与 densify_from_iter 相同)",
             "use_data_augmentation": "是否使用数据增强",
             "lambda_bg_opacity": "Weight for background opacity loss to make background transparent",
             "iterations": "训练迭代次数",
@@ -175,6 +177,7 @@ class OptimizationParams(ParamGroup):
             "edge_weight_exponent": "边缘权重指数",
             "lambda_consistency": "法线一致性权重",
             "use_ms_ssim": "启用多尺度SSIM损失",
+            "use_fused_ssim": "启用fused_ssim损失",
             "lambda_dssim": "SSIM在颜色损失中的权重",
             "lambda_normal": "法线正则化强度",
             "lambda_dist": "深度失真正则化强度",

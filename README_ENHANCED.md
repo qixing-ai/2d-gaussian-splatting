@@ -61,7 +61,8 @@ python train.py -s <数据集路径> [增强参数]
 | `--use_edge_aware_normal` | True | 启用边缘感知法向损失 |
 | `--edge_weight_exponent` | 4.0 | 边缘权重指数q |
 | `--lambda_consistency` | 0.5 | 原始法线一致性权重 |
-| `--use_ms_ssim` | True | 启用多尺度SSIM |
+| `--use_fused_ssim` | False | 启用 fused_ssim (速度更快, 优先级高于ms_ssim) |
+| `--use_ms_ssim` | True | 启用多尺度SSIM (当 fused_ssim=False 时生效) |
 | `--lambda_dssim` | 0.2 | SSIM损失权重 |
 | `--lambda_normal` | 0.05 | 法线正则化强度 |
 | `--lambda_dist` | 0.0 | 深度失真正则化强度 |
@@ -75,6 +76,11 @@ python train.py -s <数据集路径> [增强参数]
 基本训练（默认启用边缘感知法向损失、多尺度SSIM和深度收敛损失）：
 ```bash
 python train.py -s /path/to/dataset
+```
+
+使用 fused_ssim (这将自动禁用 ms_ssim):
+```bash
+python train.py -s /path/to/dataset --use_fused_ssim True
 ```
 
 禁用深度收敛损失：

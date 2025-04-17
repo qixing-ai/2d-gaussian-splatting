@@ -139,10 +139,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             # Original loss calculation if no mask is available
             Ll1 = Ll1_report # Use the already calculated unmasked L1
-            if hasattr(opt, 'use_ms_ssim') and opt.use_ms_ssim:
-                 loss = compute_color_loss(image, gt_image, lambda_dssim=opt.lambda_dssim, use_ms_ssim=True)
-            else:
-                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
+            # 确定使用哪种SSIM
+            use_fused = getattr(opt, 'use_fused_ssim', False)
+            use_ms = getattr(opt, 'use_ms_ssim', True) and not use_fused # 只有当fused未启用时，ms才可能生效
+
+            loss = compute_color_loss(image, gt_image,
+                                      lambda_dssim=opt.lambda_dssim,
+                                      use_ms_ssim=use_ms,
+                                      use_fused_ssim=use_fused)
 
         # regularization
         if iteration <= 3000:
