@@ -137,7 +137,7 @@ class OptimizationParams(ParamGroup):
         self.edge_weight_exponent = 4.0
         self.lambda_consistency = 0.5
         self.use_ms_ssim = True
-        self.use_fused_ssim = False
+        self.use_fused_ssim = True
         
         # 为参数添加帮助信息
         descriptions = {
