@@ -1,19 +1,25 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, compute_color_loss, edge_aware_normal_loss, depth_convergence_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
-import uuid
 from tqdm import tqdm
 from utils.image_utils import render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams, TrainingParams
 import numpy as np
-# 从 utils.tensorboard_utils 导入函数
+
+# 引入工具函数
 from utils.tensorboard_utils import training_report
+from utils.training_utils import prepare_output_and_logger, update_learning_schedules, perform_densification
+from utils.training_utils import compute_viewpoint_loss, log_training_progress
+from utils.loss_utils import l1_loss
+from utils.loss_functions import (
+    calculate_color_loss, calculate_normal_loss, calculate_convergence_loss,
+    calculate_background_opacity_loss, get_lambda_normal, get_lambda_dist, get_lambda_convergence
+)
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -21,16 +27,6 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-# 移除 ply 可视化工具的导入（已被注释）
-
-# 移除 log_tb_image 函数定义
-# def log_tb_image(tb_writer, tag_prefix, image_name, image_tensor, global_step, cmap=None, normalize=True):
-#     ...
-
-# 移除 training_report 函数定义
-# @torch.no_grad()
-# def training_report(tb_writer, iteration, Ll1, loss, l1_loss_func, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
-#     ...
 
 def training(params):
     """
@@ -84,11 +80,8 @@ def training(params):
 
         iter_start.record()
 
-        gaussians.update_learning_rate(iteration)
-
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
+        # 更新学习率和SH级别
+        update_learning_schedules(gaussians, iteration, opt)
 
         # Pick a random Camera
         if not viewpoint_stack:
@@ -109,7 +102,6 @@ def training(params):
 
         # 如果图像完全透明，则跳过此迭代
         if is_fully_transparent:
-            # print(f"Skipping fully transparent image: {viewpoint_cam.image_name}") # 可以取消注释以进行调试
             continue # 跳到下一次迭代
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
@@ -129,126 +121,51 @@ def training(params):
             gt_image = gt_image[:3, :, :] # Use only RGB channels for ground truth color
             mask = (mask > 0.5).float() # Threshold alpha mask to be binary
 
-        # Calculate unmasked L1 for reporting purposes
-        Ll1_report = l1_loss(image, gt_image)
+        # 计算颜色损失
+        color_loss, Ll1_report = calculate_color_loss(image, gt_image, mask, opt)
 
-        # 颜色损失计算
-        if mask is not None:
-            # Apply mask to L1 calculation
-            pixel_count = mask.sum()
-            if pixel_count > 0:
-                masked_l1 = (torch.abs(image - gt_image) * mask).sum() / (pixel_count * image.shape[0] + 1e-6) # Mean L1 over foreground pixels
-            else:
-                masked_l1 = torch.tensor(0.0, device=image.device) # Avoid division by zero if mask is empty
-
-            # SSIM calculation (on unmasked images for now)
-            if hasattr(opt, 'use_ms_ssim') and opt.use_ms_ssim:
-                 # Need to ensure ms_ssim is available and imported if used.
-                 # Assuming ssim function from loss_utils handles both cases based on internal logic or we'd need separate calls.
-                 # For simplicity, using the standard ssim function here. Modify if ms_ssim is intended.
-                 ssim_val = ssim(image, gt_image) # Calculate SSIM on full image
-                 loss = (1.0 - opt.lambda_dssim) * masked_l1 + opt.lambda_dssim * (1.0 - ssim_val)
-            else:
-                 ssim_val = ssim(image, gt_image) # Calculate SSIM on full image
-                 loss = (1.0 - opt.lambda_dssim) * masked_l1 + opt.lambda_dssim * (1.0 - ssim_val)
-        else:
-            # Original loss calculation if no mask is available
-            Ll1 = Ll1_report # Use the already calculated unmasked L1
-            # 确定使用哪种SSIM
-            use_fused = getattr(opt, 'use_fused_ssim', False)
-            use_ms = getattr(opt, 'use_ms_ssim', True) and not use_fused # 只有当fused未启用时，ms才可能生效
-
-            loss = compute_color_loss(image, gt_image,
-                                      lambda_dssim=opt.lambda_dssim,
-                                      use_ms_ssim=use_ms,
-                                      use_fused_ssim=use_fused)
-
-        # regularization
-        if iteration <= 3000:
-            lambda_normal = 0.0
-        elif iteration <= 5000:
-            lambda_normal = opt.lambda_normal * (iteration - 3000) / 2000  # 线性增加
-        else:
-            lambda_normal = opt.lambda_normal
-        lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
-        # 深度收敛损失权重设置
-        lambda_conv = opt.lambda_depth_convergence if hasattr(opt, 'use_depth_convergence') and opt.use_depth_convergence and iteration > opt.conv_start_iter else 0.0
-        # 背景透明度损失权重
+        # 获取损失权重
+        lambda_normal = get_lambda_normal(iteration, opt)
+        lambda_dist = get_lambda_dist(iteration, opt)
+        lambda_conv = get_lambda_convergence(iteration, opt)
         lambda_bg_opacity = opt.lambda_bg_opacity
 
+        # 获取渲染结果
         rend_dist = render_pkg["rend_dist"]
         rend_normal = render_pkg['rend_normal']
         surf_normal = render_pkg['surf_normal']
         
-        # 法线损失计算
-        if lambda_normal > 0:
-            # 检查是否启用了边缘感知法向损失
-            if hasattr(opt, 'use_edge_aware_normal') and opt.use_edge_aware_normal:
-                # 使用边缘感知法向损失
-                edge_weight_exp = opt.edge_weight_exponent if hasattr(opt, 'edge_weight_exponent') else 4.0
-                lambda_cons = opt.lambda_consistency if hasattr(opt, 'lambda_consistency') else 0.5
-                
-                normal_loss = lambda_normal * edge_aware_normal_loss(
-                    rendered_normal=rend_normal,
-                    gt_rgb=gt_image,
-                    surf_normal=surf_normal,
-                    q=edge_weight_exp,
-                    lambda_consistency=lambda_cons
-                )
-            else:
-                # 使用原始法线一致性损失
-                normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-                normal_loss = lambda_normal * (normal_error).mean()
-        else:
-            normal_loss = torch.tensor(0.0, device='cuda')
-            
-        dist_loss = lambda_dist * (rend_dist).mean()
+        # 计算正则化损失
+        normal_loss = calculate_normal_loss(rend_normal, surf_normal, gt_image, lambda_normal, opt)
+        dist_loss = lambda_dist * rend_dist.mean()
         
         # 计算深度收敛损失
         if lambda_conv > 0:
-            # 获取渲染深度和渲染不透明度
             surf_depth = render_pkg['surf_depth']
             render_alpha = render_pkg['rend_alpha']
-            # 计算深度收敛损失
-            convergence_loss = lambda_conv * depth_convergence_loss(surf_depth, render_alpha)
+            convergence_loss = calculate_convergence_loss(surf_depth, render_alpha, lambda_conv)
         else:
             convergence_loss = torch.tensor(0.0, device='cuda')
 
-        # 添加背景透明度损失 (仅当 mask 存在时)
-        background_opacity_loss = torch.tensor(0.0, device='cuda')
-        # 直接从 opt 获取权重，因为它应该总是存在 (有默认值)
-        lambda_bg_opacity = opt.lambda_bg_opacity
-
-        if mask is not None and lambda_bg_opacity > 0:
-            render_alpha = render_pkg['rend_alpha'] # 获取渲染的 alpha
-            background_mask = (1 - mask)
-            num_background_pixels = background_mask.sum()
-            if num_background_pixels > 0:
-                # 计算背景区域 alpha 的 L1 损失均值
-                background_opacity_loss = (torch.abs(render_alpha * background_mask)).sum() / num_background_pixels
+        # 计算背景透明度损失
+        if 'rend_alpha' in render_pkg:
+            render_alpha = render_pkg['rend_alpha']
+            background_opacity_loss = calculate_background_opacity_loss(render_alpha, mask, lambda_bg_opacity)
+        else:
+            background_opacity_loss = torch.tensor(0.0, device='cuda')
           
-
         # 总损失
-        total_loss = loss + dist_loss + normal_loss + convergence_loss + lambda_bg_opacity * background_opacity_loss
+        total_loss = color_loss + dist_loss + normal_loss + convergence_loss + lambda_bg_opacity * background_opacity_loss
         
         # 记录当前视角的loss
         viewpoint_name = viewpoint_cam.image_name
         current_loss = total_loss.item()
         
-        # 更新视角平均loss
-        if viewpoint_name not in viewpoint_losses:
-            viewpoint_losses[viewpoint_name] = current_loss
-        else:
-            # 使用指数移动平均更新loss
-            viewpoint_losses[viewpoint_name] = 0.7 * viewpoint_losses[viewpoint_name] + 0.3 * current_loss
-        
-        # 更新动态阈值
-        all_losses.append(current_loss)
-        if iteration % threshold_update_interval == 0 and len(all_losses) > 0:
-            # 计算最近1000个loss的平均值
-            recent_losses = all_losses[-1000:] if len(all_losses) > 1000 else all_losses
-            avg_loss = sum(recent_losses) / len(recent_losses)
-            dynamic_threshold = avg_loss * threshold_multiplier
+        # 更新视角损失统计
+        viewpoint_losses, all_losses, dynamic_threshold = compute_viewpoint_loss(
+            viewpoint_losses, current_loss, viewpoint_name, iteration,
+            all_losses, dynamic_threshold, threshold_update_interval, threshold_multiplier
+        )
         
         total_loss.backward()
 
@@ -256,7 +173,7 @@ def training(params):
 
         with torch.no_grad():
             # Progress bar
-            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            ema_loss_for_log = 0.4 * color_loss.item() + 0.6 * ema_loss_for_log
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
             ema_conv_for_log = 0.4 * convergence_loss.item() + 0.6 * ema_conv_for_log
@@ -269,63 +186,33 @@ def training(params):
                 }
                
                 progress_bar.set_postfix(loss_dict)
-
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
 
-            # Log and save
-            if tb_writer is not None:
-                tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
-                tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
-                tb_writer.add_scalar('train_loss_patches/conv_loss', ema_conv_for_log, iteration)
-                tb_writer.add_scalar('train_loss_patches/dynamic_threshold', dynamic_threshold, iteration)
-                # 记录背景透明度损失到 TensorBoard
-                if lambda_bg_opacity > 0:
-                     tb_writer.add_scalar('train_loss_patches/bg_opacity_loss', ema_bg_opacity_for_log, iteration)
-
-                # 记录当前视角的loss
-                tb_writer.add_scalar(f'viewpoint_losses/{viewpoint_name}', current_loss, iteration)
-                
-                # 每1000次迭代记录一次所有视角的平均loss
-                if iteration % 1000 == 0:
-                    # 找出loss最高的5个视角
-                    sorted_viewpoints = sorted(viewpoint_losses.items(), key=lambda x: x[1], reverse=True)
-                    top_5_viewpoints = sorted_viewpoints[:5]
-                    
-                    # 记录到TensorBoard
-                    for i, (name, loss_val) in enumerate(top_5_viewpoints):
-                        tb_writer.add_scalar(f'top_loss_viewpoints/rank_{i+1}', loss_val, iteration)
-                        tb_writer.add_text(f'top_loss_viewpoints/name_{i+1}', name, iteration)
-
-            # 将用于报告的 L1 损失值传递给 training_report
-            # 注意：第三个参数 Ll1 现在是 Ll1_report
-            training_report(tb_writer, iteration, Ll1_report, total_loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            # 记录训练进度
+            log_training_progress(
+                tb_writer, iteration, ema_loss_for_log, ema_dist_for_log,
+                ema_normal_for_log, ema_conv_for_log, ema_bg_opacity_for_log,
+                dynamic_threshold, lambda_bg_opacity, 
+                viewpoint_name, current_loss, viewpoint_losses
+            )
+            
+            # 使用tensorboard_utils中的函数记录训练报告
+            training_report(tb_writer, iteration, Ll1_report, total_loss, l1_loss, 
+                          iter_start.elapsed_time(iter_end), testing_iterations, 
+                          scene, render, (pipe, background))
+                          
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
                 
-            # Densification
-            if iteration < opt.densify_until_iter:
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-                
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    # 计算梯度
-                    grads = gaussians.xyz_gradient_accum / gaussians.denom
-                    grads[grads.isnan()] = 0.0
-                    
-                    # 执行稠密化操作
-                    gaussians.densify_and_clone(grads, opt.densify_grad_threshold, scene.cameras_extent)
-                    gaussians.densify_and_split(grads, opt.densify_grad_threshold, scene.cameras_extent)
-
-                    # 裁剪低不透明度的点
-                    if iteration > opt.cull_from_iter:
-                        opacity_mask = (gaussians.get_opacity < opt.opacity_cull).squeeze()
-                        gaussians.prune_points(opacity_mask)
-                
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
+            # 执行稠密化操作
+            perform_densification(
+                gaussians, iteration, opt, visibility_filter, radii,
+                viewspace_point_tensor, scene.cameras_extent,
+                white_background=dataset.white_background
+            )
 
             # Optimizer step
             if iteration < opt.iterations:
