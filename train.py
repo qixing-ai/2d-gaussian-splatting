@@ -10,7 +10,7 @@ import uuid
 from tqdm import tqdm
 from utils.image_utils import render_net_image
 from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from arguments import ModelParams, PipelineParams, OptimizationParams, TrainingParams
 import numpy as np
 # 从 utils.tensorboard_utils 导入函数
 from utils.tensorboard_utils import training_report
@@ -32,10 +32,25 @@ except ImportError:
 # def training_report(tb_writer, iteration, Ll1, loss, l1_loss_func, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
 #     ...
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
+def training(params):
+    """
+    主训练函数
+    
+    Args:
+        params: 包含所有参数的对象
+    """
+    # 从params对象中提取需要的参数
+    opt = params.optimization
+    pipe = params.pipeline
+    dataset = params.model
+    testing_iterations = params.test_iterations
+    saving_iterations = params.save_iterations
+    checkpoint_iterations = params.checkpoint_iterations
+    checkpoint = params.start_checkpoint
+    
     first_iter = 0
     
-    tb_writer = prepare_output_and_logger(dataset)
+    tb_writer = prepare_output_and_logger(params)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
@@ -345,57 +360,55 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     # 移除 'as e' 和注释掉的 'raise e'
                     network_gui.conn = None
 
-def prepare_output_and_logger(args):    
-    if not args.model_path:
+def prepare_output_and_logger(params):    
+    """准备输出目录和日志记录器"""
+    # 获取模型参数
+    model_params = params.model
+    
+    if not model_params.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
         else:
             unique_str = str(uuid.uuid4())
-        args.model_path = os.path.join("./output/", unique_str[0:10])
+        model_params.model_path = os.path.join("./output/", unique_str[0:10])
         
-    # Set up output folder
-    print("Output folder: {}".format(args.model_path))
-    os.makedirs(args.model_path, exist_ok = True)
-    with open(os.path.join(args.model_path, "cfg_args"), 'w') as cfg_log_f:
-        cfg_log_f.write(str(Namespace(**vars(args))))
+    # 设置输出文件夹
+    print("输出文件夹: {}".format(model_params.model_path))
+    os.makedirs(model_params.model_path, exist_ok = True)
+    
+    # 保存配置参数
+    with open(os.path.join(model_params.model_path, "cfg_args"), 'w') as cfg_log_f:
+        # 将整个params对象序列化为Namespace并保存
+        cfg_log_f.write(str(Namespace(**vars(params))))
 
-    # Create Tensorboard writer
+    # 创建Tensorboard写入器
     tb_writer = None
     if TENSORBOARD_FOUND:
-        tb_writer = SummaryWriter(args.model_path)
+        tb_writer = SummaryWriter(model_params.model_path)
     else:
-        print("Tensorboard not available: not logging progress")
+        print("Tensorboard不可用: 不记录进度")
     return tb_writer
 
 if __name__ == "__main__":
-    # Set up command line argument parser
+    # 设置命令行参数解析器
     parser = ArgumentParser(description="Training script parameters")
-    lp = ModelParams(parser)
-    op = OptimizationParams(parser)
-    pp = PipelineParams(parser)
-    parser.add_argument('--ip', type=str, default="127.0.0.1")
-    parser.add_argument('--port', type=int, default=6009)
-    parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 12_000])
-    # 每1000次迭代保存一次点云并在TensorBoard中可视化
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[i for i in range(1000, 30001, 1000)])
-    parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
-    parser.add_argument("--start_checkpoint", type=str, default = None)
     
+    # 使用统一的参数管理类
+    params_manager = TrainingParams(parser)
+    
+    # 解析参数
     args = parser.parse_args(sys.argv[1:])
-    args.save_iterations.append(args.iterations)
+    params = params_manager.extract(args)
     
-    print("Optimizing " + args.model_path)
+    print("正在优化 " + params.model.model_path)
     
-    
-    # Initialize system state (RNG)
-    safe_state(args.quiet)
+    # 初始化系统状态(RNG)
+    safe_state(params.quiet)
 
-    # Start GUI server, configure and run training
-    network_gui.init(args.ip, args.port)
-    torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint)
+    # 启动GUI服务器，配置并运行训练
+    network_gui.init(params.ip, params.port)
+    torch.autograd.set_detect_anomaly(params.detect_anomaly)
+    training(params)
 
-    # All done
-    print("\nTraining complete.")
+    # 完成
+    print("\n训练完成。")
