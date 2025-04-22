@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
+from pytorch_msssim import ms_ssim
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -71,4 +72,19 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
         return ssim_map.mean()
     else:
         return ssim_map.mean(1).mean(1).mean(1)
+
+def ms_ssim_loss(img1, img2):
+    """
+    计算多尺度结构相似性损失
+    Args:
+        img1: 预测图像 [C, H, W]
+        img2: 真实图像 [C, H, W]
+    Returns:
+        MS-SSIM 损失值
+    """
+    from pytorch_msssim import ms_ssim
+    # 添加批次维度
+    img1 = img1.unsqueeze(0)  # [1, C, H, W]
+    img2 = img2.unsqueeze(0)  # [1, C, H, W]
+    return 1 - ms_ssim(img1, img2, data_range=1.0, size_average=True)
 
