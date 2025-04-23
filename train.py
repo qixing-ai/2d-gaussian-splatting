@@ -88,7 +88,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         # alpha mask loss - 使用GT alpha掩码降低背景点透明度
         alpha_loss = torch.tensor(0.0, device="cuda")
-        if hasattr(viewpoint_cam, 'gt_alpha_mask') and lambda_alpha > 0:
+        if hasattr(viewpoint_cam, 'gt_alpha_mask') and lambda_alpha > 0 and viewpoint_cam.gt_alpha_mask is not None:
             gt_alpha = viewpoint_cam.gt_alpha_mask
             rend_alpha = render_pkg['rend_alpha']
             # 对背景区域(gt_alpha=0)的点施加惩罚，鼓励其透明度更低
