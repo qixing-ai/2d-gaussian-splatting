@@ -42,6 +42,9 @@ def loadCam(args, id, cam_info, resolution_scale):
         import torch
         resized_image_rgb = torch.cat([PILtoTorch(im, resolution) for im in cam_info.image.split()[:3]], dim=0)
         loaded_mask = PILtoTorch(cam_info.image.split()[3], resolution)
+        if torch.all(loaded_mask == 0):
+            print(f"[ INFO ] 图像 {cam_info.image_name} 完全透明，跳过加载")
+            return None
         gt_image = resized_image_rgb
     else:
         resized_image_rgb = PILtoTorch(cam_info.image, resolution)
@@ -57,7 +60,9 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
 
     for id, c in enumerate(cam_infos):
-        camera_list.append(loadCam(args, id, c, resolution_scale))
+        camera = loadCam(args, id, c, resolution_scale)
+        if camera is not None:  # 只添加非 None 的相机
+            camera_list.append(camera)
 
     return camera_list
 
