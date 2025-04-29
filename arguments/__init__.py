@@ -86,7 +86,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_dist = 0.01 #结构破碎时增大
         self.lambda_normal = 0.1
         self.lambda_alpha = 0.05 #控制背景点透明度的权重
-        self.opacity_cull = 0.05
+        self.opacity_cull = 0.1
 
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
