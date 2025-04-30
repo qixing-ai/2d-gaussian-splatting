@@ -402,6 +402,40 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
+    def compute_multi_view_contribution(self, cameras, pipe, bg_color):
+        """Compute multi-view contribution for each Gaussian using top-5 views"""
+        from gaussian_renderer import render  # Lazy import to avoid circular dependency
+        contributions = torch.zeros(self.get_xyz.shape[0], device="cuda")
+        
+        # Sample top-5 views for each Gaussian
+        view_indices = torch.randperm(len(cameras))[:5]
+        sampled_cameras = [cameras[i] for i in view_indices]
+        
+        for cam in sampled_cameras:
+            with torch.no_grad():
+                render_pkg = render(cam, self, pipe, bg_color)
+                alpha = render_pkg["rend_alpha"]
+                # Compute per-pixel contribution (Eq.4 from TrimGS)
+                contribution = alpha.pow(0.25) * (1 - alpha).pow(0.75)
+                # Aggregate to Gaussians (simplified version)
+                contributions += contribution.mean(dim=[1,2])
+        
+        return contributions / len(sampled_cameras)
+
+    def prune_low_contribution(self, contributions, prune_ratio=0.1):
+        """Prune Gaussians with lowest contribution scores"""
+        if contributions.shape[0] == 0:
+            return
+            
+        # Get indices of low contribution Gaussians
+        k = int(contributions.shape[0] * prune_ratio)
+        _, idx = torch.topk(-contributions, k)
+        prune_mask = torch.zeros_like(contributions, dtype=torch.bool)
+        prune_mask[idx] = True
+        
+        self.prune_points(prune_mask)
+        torch.cuda.empty_cache()
+
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
