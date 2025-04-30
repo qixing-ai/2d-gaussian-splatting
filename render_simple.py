@@ -38,6 +38,8 @@ if __name__ == "__main__":
     shs = gaussians.get_features.detach().cpu().numpy()
     # 只使用DC分量作为基础颜色
     colors = shs[:,0,:3]  # 取第一个球谐系数作为颜色
+    # 获取透明度
+    opacities = gaussians.get_opacity.detach().cpu().numpy()
     
     # 创建最终网格
     final_mesh = o3d.geometry.TriangleMesh()
@@ -68,8 +70,10 @@ if __name__ == "__main__":
         disk.vertices = o3d.utility.Vector3dVector(vertices)
         disk.triangles = o3d.utility.Vector3iVector(triangles)
         disk.vertex_normals = o3d.utility.Vector3dVector(np.tile(rot_matrix[:,2], (len(vertices), 1)))
-        # 设置顶点颜色 (使用sigmoid确保颜色在0-1范围内)
+        # 设置顶点颜色并携带透明度信息
         rgb_color = 1/(1+np.exp(-colors[i]))  # sigmoid激活
+        # 将透明度映射到蓝色通道的小范围变化(0.01-0.02)
+        rgb_color[2] = rgb_color[2] * 0.98 + 0.02 * opacities[i][0]
         disk.vertex_colors = o3d.utility.Vector3dVector(np.tile(rgb_color, (len(vertices), 1)))
         
         # 合并到最终网格
