@@ -144,12 +144,17 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                 gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold)
             
-            # Contribution-based pruning (every 1000 iterations)
-            if iteration % 1000 == 0 and iteration > 3000:
+            # Contribution-based pruning
+            if iteration % opt.contribution_prune_interval == 0 and iteration > 3000:
                 # Compute multi-view contribution
-                contribution = gaussians.compute_multi_view_contribution(scene.getTrainCameras(), pipe, background)
-                # Prune low contribution Gaussians (bottom 10%)
-                gaussians.prune_low_contribution(contribution, prune_ratio=0.1)
+                contribution = gaussians.compute_multi_view_contribution(
+                    scene.getTrainCameras(), 
+                    pipe, 
+                    background,
+                    gamma=opt.contribution_gamma
+                )
+                # Prune low contribution Gaussians
+                gaussians.prune_low_contribution(contribution, prune_ratio=opt.prune_ratio)
             
             if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                 gaussians.reset_opacity()

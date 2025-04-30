@@ -88,6 +88,11 @@ class OptimizationParams(ParamGroup):
         self.lambda_alpha = 0.05 #控制背景点透明度的权重
         self.opacity_cull = 0.1
 
+        # Contribution-based pruning parameters
+        self.prune_ratio = 0.1 # 修剪比例(0-1)
+        self.contribution_gamma = 0.25 # 贡献度计算参数
+        self.contribution_prune_interval = 500 # 修剪间隔(迭代次数)
+
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500

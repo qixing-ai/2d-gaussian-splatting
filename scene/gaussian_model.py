@@ -402,7 +402,7 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
-    def compute_multi_view_contribution(self, cameras, pipe, bg_color):
+    def compute_multi_view_contribution(self, cameras, pipe, bg_color, gamma=0.25):
         """Compute multi-view contribution for each Gaussian using top-5 views"""
         from gaussian_renderer import render  # Lazy import to avoid circular dependency
         contributions = torch.zeros(self.get_xyz.shape[0], device="cuda")
@@ -416,7 +416,7 @@ class GaussianModel:
                 render_pkg = render(cam, self, pipe, bg_color)
                 alpha = render_pkg["rend_alpha"]
                 # Compute per-pixel contribution (Eq.4 from TrimGS)
-                contribution = alpha.pow(0.25) * (1 - alpha).pow(0.75)
+                contribution = alpha.pow(gamma) * (1 - alpha).pow(1 - gamma)
                 # Aggregate to Gaussians (simplified version)
                 contributions += contribution.mean(dim=[1,2])
         
