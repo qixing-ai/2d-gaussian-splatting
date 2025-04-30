@@ -6,56 +6,78 @@ from argparse import ArgumentParser
 from gaussian_renderer import GaussianModel
 from arguments import ModelParams
 
+def quat_to_rot_matrix(q):
+    """将四元数转换为旋转矩阵"""
+    w, x, y, z = q
+    # 修正后的旋转矩阵，添加转置以修正法线方向
+    return np.array([
+        [1 - 2*y*y - 2*z*z, 2*x*y - 2*z*w, 2*x*z + 2*y*w],
+        [2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z, 2*y*z - 2*x*w],
+        [2*x*z - 2*y*w, 2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y]
+    ]).T
+
 if __name__ == "__main__":
     # 简化参数解析
     parser = ArgumentParser()
     model = ModelParams(parser)
     parser.add_argument("--iteration", default=-1, type=int)
     parser.add_argument("--output", default="output.ply", type=str)
-    parser.add_argument("--search_radius", type=float, default=0.1, 
-                      help="法线估计搜索半径")
-    parser.add_argument("--max_distance", type=float, default=0.15,
-                      help="最大连接距离")
+    parser.add_argument("--sample_density", type=int, default=10,
+                      help="椭圆面采样密度(每边点数)")
     args = parser.parse_args()
 
-    # 加载场景和高斯模型
+    # 加载场景和参数
     dataset = model.extract(args)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians, load_iteration=args.iteration, shuffle=False)
     
-    # 提取高斯点中心坐标(分离计算图)
-    points = gaussians._xyz.detach().cpu().numpy()
+    # 提取高斯参数
+    centers = gaussians._xyz.detach().cpu().numpy()
+    scales = gaussians.get_scaling.detach().cpu().numpy()
+    rotations = gaussians.get_rotation.detach().cpu().numpy()
+    # 获取SH系数并转换为RGB颜色
+    shs = gaussians.get_features.detach().cpu().numpy()
+    # 只使用DC分量作为基础颜色
+    colors = shs[:,0,:3]  # 取第一个球谐系数作为颜色
     
-    # 创建点云并生成简单网格
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)
+    # 创建最终网格
+    final_mesh = o3d.geometry.TriangleMesh()
     
-    # 法线估计(基于K近邻)
-    pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30))
+    # 生成圆盘顶点的基础模板(可复用)
+    theta = np.linspace(0, 2*np.pi, args.sample_density, endpoint=False)
+    template_x = np.cos(theta)
+    template_y = np.sin(theta)
+    template_vertices = np.column_stack([template_x, template_y, np.zeros_like(theta)])
+    template_vertices = np.vstack([template_vertices, [0, 0, 0]])
     
-    # 基于邻近点生成网格
-    points = np.asarray(pcd.points)
-    triangles = []
+    # 生成基础三角形索引(可复用)
+    n = len(theta)
+    triangles = [[j, (j+1)%n, n] for j in range(n)]
     
-    # 构建KDTree加速邻近点搜索
-    tree = o3d.geometry.KDTreeFlann(pcd)
-    
-    # 生成三角面片
-    for i in range(len(points)):
-        # 找到半径内的邻近点
-        [k, idx, _] = tree.search_radius_vector_3d(pcd.points[i], args.max_distance)
+    for i in range(len(centers)):
+        # 缩放和应用变换
+        vertices = template_vertices.copy()
+        vertices[:-1,0] *= scales[i,0]
+        vertices[:-1,1] *= scales[i,1]
         
-        # 简单连接邻近点形成三角面
-        if k > 3:  # 至少有3个邻近点
-            triangles.append([i, idx[1], idx[2]])
-            if k > 4:
-                triangles.append([i, idx[2], idx[3]])
+        # 应用旋转和平移
+        rot_matrix = quat_to_rot_matrix(rotations[i])
+        vertices = np.dot(vertices, rot_matrix.T) + centers[i]
+        
+        # 创建单个圆盘网格
+        disk = o3d.geometry.TriangleMesh()
+        disk.vertices = o3d.utility.Vector3dVector(vertices)
+        disk.triangles = o3d.utility.Vector3iVector(triangles)
+        # 计算法线方向，确保与旋转矩阵一致
+        normal = rot_matrix[:,2]  # 使用旋转矩阵的第三列作为法线
+        disk.vertex_normals = o3d.utility.Vector3dVector(np.tile(normal, (len(vertices), 1)))
+        # 设置顶点颜色 (使用sigmoid确保颜色在0-1范围内)
+        rgb_color = 1/(1+np.exp(-colors[i]))  # sigmoid激活
+        disk.vertex_colors = o3d.utility.Vector3dVector(np.tile(rgb_color, (len(vertices), 1)))
+        
+        # 合并到最终网格
+        final_mesh += disk
     
-    # 创建网格对象
-    mesh = o3d.geometry.TriangleMesh()
-    mesh.vertices = o3d.utility.Vector3dVector(points)
-    mesh.triangles = o3d.utility.Vector3iVector(np.array(triangles))
-    
-    # 保存网格文件
-    o3d.io.write_triangle_mesh(args.output, mesh)
-    print(f"Mesh saved to {args.output}")
+    # 保存网格
+    o3d.io.write_triangle_mesh(args.output, final_mesh, write_vertex_normals=True)
+    print(f"Disk mesh saved to {args.output}")
