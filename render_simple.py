@@ -6,14 +6,14 @@ from argparse import ArgumentParser
 from gaussian_renderer import GaussianModel
 from arguments import ModelParams
 
+from utils.general_utils import build_rotation
+
 def quat_to_rot_matrix(q):
     """将四元数转换为旋转矩阵"""
-    w, x, y, z = q
-    return np.array([
-        [1 - 2*y*y - 2*z*z, 2*x*y - 2*z*w, 2*x*z + 2*y*w],
-        [2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z, 2*y*z - 2*x*w],
-        [2*x*z - 2*y*w, 2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y]
-    ])
+    # 使用GaussianModel中的build_rotation函数
+    q_tensor = torch.tensor(q, device="cuda").unsqueeze(0)
+    rot_matrix = build_rotation(q_tensor).squeeze(0).cpu().numpy()
+    return rot_matrix
 
 if __name__ == "__main__":
     # 简化参数解析
@@ -38,8 +38,6 @@ if __name__ == "__main__":
     shs = gaussians.get_features.detach().cpu().numpy()
     # 只使用DC分量作为基础颜色
     colors = shs[:,0,:3]  # 取第一个球谐系数作为颜色
-    # 获取透明度
-    opacities = gaussians.get_opacity.detach().cpu().numpy()
     
     # 创建最终网格
     final_mesh = o3d.geometry.TriangleMesh()
@@ -69,12 +67,19 @@ if __name__ == "__main__":
         disk = o3d.geometry.TriangleMesh()
         disk.vertices = o3d.utility.Vector3dVector(vertices)
         disk.triangles = o3d.utility.Vector3iVector(triangles)
-        disk.vertex_normals = o3d.utility.Vector3dVector(np.tile(rot_matrix[:,2], (len(vertices), 1)))
-        # 设置顶点颜色并携带透明度信息
-        rgb_color = 1/(1+np.exp(-colors[i]))  # sigmoid激活
-        # 将透明度映射到蓝色通道的小范围变化(0.01-0.02)
-        rgb_color[2] = rgb_color[2] * 0.98 + 0.02 * opacities[i][0]
-        disk.vertex_colors = o3d.utility.Vector3dVector(np.tile(rgb_color, (len(vertices), 1)))
+        # 对于2D高斯圆盘，法线方向就是旋转矩阵的第三列(局部z轴方向)
+        # 因为圆盘在局部坐标系中是xy平面，法线沿z轴方向
+        normal_direction = rot_matrix[:,2]  # 获取旋转后的法线方向(全局坐标系)
+        
+        # 统一法线方向 - 确保所有法线朝向相机(假设相机在原点)
+        view_dir = centers[i] / np.linalg.norm(centers[i])
+        if np.dot(normal_direction, view_dir) > 0:
+            normal_direction = -normal_direction  # 翻转法线使其朝向相机
+        
+        disk.vertex_normals = o3d.utility.Vector3dVector(np.tile(normal_direction, (len(vertices), 1)))
+        # 设置顶点颜色
+        rgb_color = 1/(1+np.exp(-colors[i]))  # sigmoid激活颜色
+        disk.vertex_colors = o3d.utility.Vector3dVector(np.tile(rgb_color.astype(np.float64), (len(vertices), 1)))
         
         # 合并到最终网格
         final_mesh += disk
