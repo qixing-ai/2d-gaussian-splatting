@@ -9,12 +9,11 @@ from arguments import ModelParams
 def quat_to_rot_matrix(q):
     """将四元数转换为旋转矩阵"""
     w, x, y, z = q
-    # 修正后的旋转矩阵，添加转置以修正法线方向
     return np.array([
         [1 - 2*y*y - 2*z*z, 2*x*y - 2*z*w, 2*x*z + 2*y*w],
         [2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z, 2*y*z - 2*x*w],
         [2*x*z - 2*y*w, 2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y]
-    ]).T
+    ])
 
 if __name__ == "__main__":
     # 简化参数解析
@@ -68,9 +67,7 @@ if __name__ == "__main__":
         disk = o3d.geometry.TriangleMesh()
         disk.vertices = o3d.utility.Vector3dVector(vertices)
         disk.triangles = o3d.utility.Vector3iVector(triangles)
-        # 计算法线方向，确保与旋转矩阵一致
-        normal = rot_matrix[:,2]  # 使用旋转矩阵的第三列作为法线
-        disk.vertex_normals = o3d.utility.Vector3dVector(np.tile(normal, (len(vertices), 1)))
+        disk.vertex_normals = o3d.utility.Vector3dVector(np.tile(rot_matrix[:,2], (len(vertices), 1)))
         # 设置顶点颜色 (使用sigmoid确保颜色在0-1范围内)
         rgb_color = 1/(1+np.exp(-colors[i]))  # sigmoid激活
         disk.vertex_colors = o3d.utility.Vector3dVector(np.tile(rgb_color, (len(vertices), 1)))
