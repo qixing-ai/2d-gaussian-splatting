@@ -68,10 +68,9 @@ if __name__ == "__main__":
         disk.vertices = o3d.utility.Vector3dVector(vertices)
         disk.triangles = o3d.utility.Vector3iVector(triangles)
         # 对于2D高斯圆盘，法线方向就是旋转矩阵的第三列(局部z轴方向)
-        # 因为圆盘在局部坐标系中是xy平面，法线沿z轴方向
         normal_direction = rot_matrix[:,2]  # 获取旋转后的法线方向(全局坐标系)
         
-        # 统一法线方向 - 确保所有法线朝向相机(假设相机在原点)
+        # 统一法线方向 - 使法线朝向相机(假设相机在原点)
         view_dir = centers[i] / np.linalg.norm(centers[i])
         if np.dot(normal_direction, view_dir) > 0:
             normal_direction = -normal_direction  # 翻转法线使其朝向相机
