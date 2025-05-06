@@ -86,6 +86,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_dist = 0.01 #结构破碎时增大
         self.lambda_normal = 0.05
         self.lambda_alpha = 0.05 #控制背景点透明度的权重
+        self.lambda_edge_aware = 0.1 #边缘感知曲率损失的权重
         self.opacity_cull = 0.1
 
         # Contribution-based pruning parameters
