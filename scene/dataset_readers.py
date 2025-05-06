@@ -72,8 +72,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
-        # the exact output you're looking for:
-        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
+        sys.stdout.write("Reading camera {}/{}".format(idx + 1, len(cam_extrinsics)))
         sys.stdout.flush()
 
         extr = cam_extrinsics[key]
@@ -125,13 +124,21 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
         image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
-
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height,
-                              principal_point_ndc=principal_point_ndc, camera_model=camera_model,
-                              distortion_params=distortion_params)
-        cam_infos.append(cam_info)
+        
+        try:
+            image = Image.open(image_path)
+            cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
+                                image_path=image_path, image_name=image_name, width=width, height=height,
+                                principal_point_ndc=principal_point_ndc, camera_model=camera_model,
+                                distortion_params=distortion_params)
+            cam_infos.append(cam_info)
+        except FileNotFoundError:
+            print(f"\nWarning: Image not found: {image_path}, skipping...")
+            continue
+        except Exception as e:
+            print(f"\nWarning: Error processing image {image_path}: {str(e)}, skipping...")
+            continue
+            
     sys.stdout.write('\n')
     return cam_infos
 
@@ -173,8 +180,14 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
+    print(f"\nReading images from: {os.path.join(path, reading_dir)}")
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    
+    if len(cam_infos_unsorted) == 0:
+        raise Exception("No valid images found! Please check your image paths and make sure the images exist.")
+        
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+    print(f"Successfully loaded {len(cam_infos)} images")
 
     if eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
