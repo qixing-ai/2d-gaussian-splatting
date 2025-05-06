@@ -12,7 +12,7 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim, ms_ssim_loss
+from utils.loss_utils import l1_loss, ssim, ms_ssim_loss, edge_aware_curvature_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -49,6 +49,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
     ema_alpha_for_log = 0.0
+    ema_edge_aware_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -78,6 +79,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
         lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0
+        lambda_edge_aware = opt.lambda_edge_aware if iteration > 1000 else 0.0
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal  = render_pkg['rend_normal']
@@ -85,6 +87,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
+        
+        # 边缘感知损失
+        edge_aware_loss = torch.tensor(0.0, device="cuda")
+        if lambda_edge_aware > 0:
+            edge_aware_loss = lambda_edge_aware * edge_aware_curvature_loss(
+                image, 
+                render_pkg["surf_depth"],
+                mask=viewpoint_cam.gt_alpha_mask if hasattr(viewpoint_cam, 'gt_alpha_mask') else None
+            )
         
         # alpha mask loss - 使用GT alpha掩码降低背景点透明度
         alpha_loss = torch.tensor(0.0, device="cuda")
@@ -96,7 +107,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_loss = lambda_alpha * (rend_alpha * bg_region).mean()
 
         # loss
-        total_loss = loss + dist_loss + normal_loss + alpha_loss
+        total_loss = loss + dist_loss + normal_loss + alpha_loss + edge_aware_loss
         
         total_loss.backward()
 
@@ -108,6 +119,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
             ema_alpha_for_log = 0.4 * alpha_loss.item() + 0.6 * ema_alpha_for_log
+            ema_edge_aware_for_log = 0.4 * edge_aware_loss.item() + 0.6 * ema_edge_aware_for_log
 
             if iteration % 10 == 0:
                 loss_dict = {
@@ -115,6 +127,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     "distort": f"{ema_dist_for_log:.{5}f}",
                     "normal": f"{ema_normal_for_log:.{5}f}",
                     "alpha": f"{ema_alpha_for_log:.{5}f}",
+                    "edge_aware": f"{ema_edge_aware_for_log:.{5}f}",
                     "Points": f"{len(gaussians.get_xyz)}"
                 }
                 progress_bar.set_postfix(loss_dict)
@@ -128,6 +141,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/alpha_loss', ema_alpha_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/edge_aware_loss', ema_edge_aware_for_log, iteration)
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
             if (iteration in saving_iterations):
