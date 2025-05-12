@@ -90,12 +90,12 @@ class OptimizationParams(ParamGroup):
         self.opacity_cull = 0.05  # 不透明度剔除阈值
 
         # Contribution-based pruning parameters
-        self.prune_ratio = 0.1 # 修剪比例(0-1)
+        self.prune_ratio = 0.01 # 修剪比例(0-1)
         self.contribution_gamma = 0.25 # 贡献度计算参数
         self.contribution_prune_interval = 500 # 修剪间隔(迭代次数)
 
         self.densification_interval = 100  # 密集化间隔
-        self.opacity_reset_interval = 3000  # 不透明度重置间隔
+        self.opacity_reset_interval = 0  # 不透明度重置间隔
         self.densify_from_iter = 500  # 开始密集化的迭代次数
         self.densify_until_iter = 25_000  # 停止密集化的迭代次数
         self.densify_grad_threshold = 0.0002  # 密集化梯度阈值

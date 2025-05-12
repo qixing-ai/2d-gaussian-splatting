@@ -170,7 +170,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 # Prune low contribution Gaussians
                 gaussians.prune_low_contribution(contribution, prune_ratio=opt.prune_ratio)
             
-            if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+            if (opt.opacity_reset_interval > 0 and iteration % opt.opacity_reset_interval == 0) or (dataset.white_background and iteration == opt.densify_from_iter):
                 gaussians.reset_opacity()
 
             # Optimizer step
