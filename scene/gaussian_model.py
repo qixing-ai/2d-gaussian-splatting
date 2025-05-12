@@ -437,5 +437,12 @@ class GaussianModel:
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
-        self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
+        # 原始2DGS方法 - 使用梯度范数
+        # self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter], dim=-1, keepdim=True)
+        
+        # AbsGS改进方法 - 计算绝对值和而非范数
+        grad = viewspace_point_tensor.grad[update_filter]
+        grad_abs = torch.abs(grad)
+        self.xyz_gradient_accum[update_filter] += torch.sum(grad_abs, dim=-1, keepdim=True)
+        
         self.denom[update_filter] += 1

@@ -46,15 +46,15 @@ class ParamGroup:
 
 class ModelParams(ParamGroup): 
     def __init__(self, parser, sentinel=False):
-        self.sh_degree = 3
-        self._source_path = ""
-        self._model_path = ""
-        self._images = "images"
-        self._resolution = -1
-        self._white_background = False
-        self.data_device = "cuda"
-        self.eval = False
-        self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
+        self.sh_degree = 3  # 球谐函数的阶数
+        self._source_path = ""  # 输入数据源路径
+        self._model_path = ""  # 模型保存路径
+        self._images = "images"  # 图像文件夹名称
+        self._resolution = -1  # 图像分辨率(-1表示原始分辨率)
+        self._white_background = False  # 是否使用白色背景
+        self.data_device = "cuda"  # 数据加载设备(cuda/cpu)
+        self.eval = False  # 是否为评估模式
+        self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']  # 渲染输出项列表
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -64,41 +64,41 @@ class ModelParams(ParamGroup):
 
 class PipelineParams(ParamGroup):
     def __init__(self, parser):
-        self.convert_SHs_python = False
-        self.compute_cov3D_python = False
-        self.depth_ratio = 0.0
-        self.debug = False
+        self.convert_SHs_python = False  # 是否使用Python计算球谐函数
+        self.compute_cov3D_python = False  # 是否使用Python计算3D协方差
+        self.depth_ratio = 0.0  # 深度图混合比例
+        self.debug = False  # 是否启用调试模式
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 30_000
-        self.position_lr_init = 0.00016
-        self.position_lr_final = 0.0000016
-        self.position_lr_delay_mult = 0.01
-        self.position_lr_max_steps = 30_000
-        self.feature_lr = 0.0025
-        self.opacity_lr = 0.05
-        self.scaling_lr = 0.005
-        self.rotation_lr = 0.001
-        self.percent_dense = 0.01
-        self.lambda_dssim = 0.2
-        self.lambda_dist = 0.01 #结构破碎时增大
-        self.lambda_normal = 0.05
-        self.lambda_alpha = 0.1 #控制背景点透明度的权重
-        self.lambda_edge_aware = 0.2 #边缘感知曲率损失的权重
-        self.opacity_cull = 0.1
+        self.iterations = 30_000  # 总迭代次数
+        self.position_lr_init = 0.00016  # 位置学习率初始值
+        self.position_lr_final = 0.0000016  # 位置学习率最终值
+        self.position_lr_delay_mult = 0.01  # 位置学习率延迟乘数
+        self.position_lr_max_steps = 30_000  # 位置学习率最大步数
+        self.feature_lr = 0.0025  # 特征学习率
+        self.opacity_lr = 0.05  # 不透明度学习率
+        self.scaling_lr = 0.005  # 缩放学习率
+        self.rotation_lr = 0.001  # 旋转学习率
+        self.percent_dense = 0.01  # 密集化百分比
+        self.lambda_dssim = 0.2  # DSSIM损失权重
+        self.lambda_dist = 0.01 # 距离损失权重(结构破碎时增大)
+        self.lambda_normal = 0.05  # 法线损失权重
+        self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
+        self.lambda_edge_aware = 0.2 # 边缘感知损失权重(边缘感知曲率损失的权重)
+        self.opacity_cull = 0.05  # 不透明度剔除阈值
 
         # Contribution-based pruning parameters
         self.prune_ratio = 0.1 # 修剪比例(0-1)
         self.contribution_gamma = 0.25 # 贡献度计算参数
         self.contribution_prune_interval = 500 # 修剪间隔(迭代次数)
 
-        self.densification_interval = 100
-        self.opacity_reset_interval = 3000
-        self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
+        self.densification_interval = 100  # 密集化间隔
+        self.opacity_reset_interval = 3000  # 不透明度重置间隔
+        self.densify_from_iter = 500  # 开始密集化的迭代次数
+        self.densify_until_iter = 25_000  # 停止密集化的迭代次数
+        self.densify_grad_threshold = 0.0002  # 密集化梯度阈值
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
