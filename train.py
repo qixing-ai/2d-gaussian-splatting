@@ -77,22 +77,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0  # alpha正则化权重
         lambda_edge_aware = opt.lambda_edge_aware if iteration > 1000 else 0.0  # 边缘感知正则化权重
 
-        rend_dist = render_pkg["rend_dist"]  # 渲染距离
-        rend_normal  = render_pkg['rend_normal']  # 渲染法线
+        # 计算法线损失
+        rend_normal = render_pkg['rend_normal']  # 渲染法线
         surf_normal = render_pkg['surf_normal']  # 表面法线
-        # 计算法线角度差异(弧度)
-        cos_theta = (rend_normal * surf_normal).sum(dim=0)
-        cos_theta = torch.clamp(cos_theta, -0.9999, 0.9999)  # 防止数值不稳定
-        angle_error = torch.acos(cos_theta)[None]
+        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]  # 法线误差
+        normal_loss = lambda_normal * (normal_error).mean()  # 法线损失
         
-        # 计算法线长度差异
-        rend_norm = rend_normal.norm(dim=0)
-        surf_norm = surf_normal.norm(dim=0)
-        norm_error = torch.abs(rend_norm - surf_norm)[None]
-        
-        # 组合损失(角度差异 + 0.1*长度差异)
-        normal_error = angle_error + 0.1 * norm_error
-        normal_loss = lambda_normal * normal_error.mean()  # 法线损失
+        rend_dist = render_pkg["rend_dist"]  # 渲染距离
         dist_loss = lambda_dist * (rend_dist).mean()  # 距离损失
         
         edge_aware_loss = torch.tensor(0.0, device="cuda")  # 边缘感知损失
