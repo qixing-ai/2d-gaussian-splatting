@@ -121,7 +121,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration == opt.iterations:  # 训练结束时关闭进度条
                 progress_bar.close()
 
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))  # 训练报告
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background),
+                          ema_dist_for_log, ema_normal_for_log, ema_alpha_for_log, ema_edge_aware_for_log)  # 训练报告
             if (iteration in saving_iterations):  # 保存高斯模型
                 scene.save(iteration)
 
@@ -195,10 +196,15 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 @torch.no_grad()
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs,
+                   ema_dist, ema_normal, ema_alpha, ema_edge_aware):
     if tb_writer:  # 记录训练报告到TensorBoard
         tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
+        tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist, iteration)
+        tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal, iteration)
+        tb_writer.add_scalar('train_loss_patches/alpha_loss', ema_alpha, iteration)
+        tb_writer.add_scalar('train_loss_patches/edge_aware_loss', ema_edge_aware, iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
         tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
 
