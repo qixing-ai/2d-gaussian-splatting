@@ -80,8 +80,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         rend_dist = render_pkg["rend_dist"]  # 渲染距离
         rend_normal  = render_pkg['rend_normal']  # 渲染法线
         surf_normal = render_pkg['surf_normal']  # 表面法线
-        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]  # 法线误差
-        normal_loss = lambda_normal * (normal_error).mean()  # 法线损失
+        # 计算法线角度差异(弧度)
+        cos_theta = (rend_normal * surf_normal).sum(dim=0)
+        cos_theta = torch.clamp(cos_theta, -0.9999, 0.9999)  # 防止数值不稳定
+        angle_error = torch.acos(cos_theta)[None]
+        
+        # 计算法线长度差异
+        rend_norm = rend_normal.norm(dim=0)
+        surf_norm = surf_normal.norm(dim=0)
+        norm_error = torch.abs(rend_norm - surf_norm)[None]
+        
+        # 组合损失(角度差异 + 0.1*长度差异)
+        normal_error = angle_error + 0.1 * norm_error
+        normal_loss = lambda_normal * normal_error.mean()  # 法线损失
         dist_loss = lambda_dist * (rend_dist).mean()  # 距离损失
         
         edge_aware_loss = torch.tensor(0.0, device="cuda")  # 边缘感知损失
@@ -208,15 +219,57 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         tb_writer.add_scalar('iter_time', elapsed, iteration)
         tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
 
-        if iteration in testing_iterations:
-            psnr_test = 0.0
-            l1_test = 0.0
-            psnr_test /= len(config['cameras'])
-            l1_test /= len(config['cameras'])
-            print("\n[ITER {}] 评估 {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-            if tb_writer:
-                tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+        if iteration in testing_iterations:  # 在指定测试迭代时执行以下操作:
+        # 2. 准备测试集和训练集样本配置
+        # 3. 计算并记录L1和PSNR指标
+        # 4. 可视化深度图、法线图等渲染结果
+            validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
+                                {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+
+            for config in validation_configs:
+                if config['cameras'] and len(config['cameras']) > 0:
+                    l1_test = 0.0
+                    psnr_test = 0.0
+                    for idx, viewpoint in enumerate(config['cameras']):
+                        render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
+                        image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
+                        gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                        if tb_writer and (idx < 5):
+                            from utils.general_utils import colormap
+                            depth = render_pkg["surf_depth"]
+                            norm = depth.max()
+                            depth = depth / norm
+                            depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
+                            tb_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
+                            tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
+
+                            try:
+                                rend_alpha = render_pkg['rend_alpha']
+                                rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
+                                surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
+                                tb_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
+                                tb_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
+                                tb_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
+
+                                rend_dist = render_pkg["rend_dist"]
+                                rend_dist = colormap(rend_dist.cpu().numpy()[0])
+                                tb_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
+                            except:
+                                pass
+
+                            if iteration == testing_iterations[0]:
+                                tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
+
+                        l1_test += l1_loss(image, gt_image).mean().double()
+                        psnr_test += psnr(image, gt_image).mean().double()
+
+                    psnr_test /= len(config['cameras'])
+                    l1_test /= len(config['cameras'])
+                    print("\n[ITER {}] 评估 {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
+                    if tb_writer:
+                        tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
+                        tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+
 
     
 
