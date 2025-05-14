@@ -210,6 +210,14 @@ def prepare_output_and_logger(args):
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs,
                    ema_dist, ema_normal, ema_alpha, ema_edge_aware, config):
     if tb_writer:  # 记录训练报告到TensorBoard
+        # 记录学习率
+        tb_writer.add_scalar('learning_rate/position', scene.gaussians.optimizer.param_groups[0]['lr'], iteration)
+        tb_writer.add_scalar('learning_rate/opacity', scene.gaussians.optimizer.param_groups[1]['lr'], iteration)
+        tb_writer.add_scalar('learning_rate/scaling', scene.gaussians.optimizer.param_groups[2]['lr'], iteration)
+        tb_writer.add_scalar('learning_rate/rotation', scene.gaussians.optimizer.param_groups[3]['lr'], iteration)
+        tb_writer.add_scalar('learning_rate/features_dc', scene.gaussians.optimizer.param_groups[4]['lr'], iteration)
+        tb_writer.add_scalar('learning_rate/features_rest', scene.gaussians.optimizer.param_groups[5]['lr'], iteration)
+        
         tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist, iteration)
