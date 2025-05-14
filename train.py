@@ -196,83 +196,13 @@ def prepare_output_and_logger(args):
 
 @torch.no_grad()
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
-    """训练报告函数，主要功能：
-    1. 记录关键训练指标到TensorBoard
-    2. 在测试迭代时评估模型性能
-    3. 可视化渲染结果
-    
-    参数:
-        tb_writer: TensorBoard写入器
-        iteration: 当前迭代次数
-        Ll1: L1损失值
-        loss: 总损失值
-        l1_loss: L1损失函数
-        elapsed: 迭代耗时(ms)
-        testing_iterations: 测试迭代列表
-        scene: 场景对象
-        renderFunc: 渲染函数
-        renderArgs: 渲染参数
-    """
     if tb_writer:  # 记录训练报告到TensorBoard
         tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
         tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
 
-    if iteration in testing_iterations:  # 在指定测试迭代时执行以下操作:
-        # 1. 清空GPU缓存
-        # 2. 准备测试集和训练集样本配置
-        # 3. 计算并记录L1和PSNR指标
-        # 4. 可视化深度图、法线图等渲染结果
-        torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
-
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
-                    image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
-                    gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                    if tb_writer and (idx < 5):
-                        from utils.general_utils import colormap
-                        depth = render_pkg["surf_depth"]
-                        norm = depth.max()
-                        depth = depth / norm
-                        depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
-                        tb_writer.add_images(config['name'] + "_view_{}/depth".format(viewpoint.image_name), depth[None], global_step=iteration)
-                        tb_writer.add_images(config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
-
-                        try:
-                            rend_alpha = render_pkg['rend_alpha']
-                            rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
-                            surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
-                            tb_writer.add_images(config['name'] + "_view_{}/rend_normal".format(viewpoint.image_name), rend_normal[None], global_step=iteration)
-                            tb_writer.add_images(config['name'] + "_view_{}/surf_normal".format(viewpoint.image_name), surf_normal[None], global_step=iteration)
-                            tb_writer.add_images(config['name'] + "_view_{}/rend_alpha".format(viewpoint.image_name), rend_alpha[None], global_step=iteration)
-
-                            rend_dist = render_pkg["rend_dist"]
-                            rend_dist = colormap(rend_dist.cpu().numpy()[0])
-                            tb_writer.add_images(config['name'] + "_view_{}/rend_dist".format(viewpoint.image_name), rend_dist[None], global_step=iteration)
-                        except:
-                            pass
-
-                        if iteration == testing_iterations[0]:
-                            tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
-
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    psnr_test += psnr(image, gt_image).mean().double()
-
-                psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])
-                print("\n[ITER {}] 评估 {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                if tb_writer:
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-
-        torch.cuda.empty_cache()
+    
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="训练脚本参数")  # 设置命令行参数解析器
