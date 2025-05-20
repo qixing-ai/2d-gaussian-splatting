@@ -82,7 +82,7 @@ class OptimizationParams(ParamGroup):
         self.scaling_lr = 0.005  # 缩放学习率
         self.rotation_lr = 0.001  # 旋转学习率
         self.percent_dense = 0.01  # 密集化百分比
-        self.lambda_dssim = 0.2  # DSSIM损失权重
+        self.lambda_dssim = 0.3  # DSSIM损失权重
         self.lambda_dist = 0 # 没用,这个是为了让表面高斯深度一致的,但是不一定是在表面
         self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
