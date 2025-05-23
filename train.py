@@ -136,7 +136,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                 gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold)
             
-            if iteration % opt.contribution_prune_interval == 0 and iteration > 3000:  # 基于贡献的修剪
+            if iteration % opt.contribution_prune_interval == 0 and iteration < opt.contribution_prune_until_interval:  # 基于贡献的修剪
                 contribution = gaussians.compute_multi_view_contribution(
                     scene.getTrainCameras(), 
                     pipe, 
