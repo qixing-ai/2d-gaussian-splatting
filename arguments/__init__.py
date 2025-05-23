@@ -87,7 +87,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_dist = 0 # 没用,这个是为了让表面高斯深度一致的,但是不一定是在表面
         self.lambda_edge_aware = 0 # 边缘感知损失权重(边缘感知曲率损失的权重)
 
-        self.lambda_normal = 0.01  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
+        self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
         self.opacity_cull = 0.05  # 不透明度剔除阈值
 
