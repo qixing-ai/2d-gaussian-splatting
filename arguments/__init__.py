@@ -72,11 +72,11 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
-        self.iterations = 30_000  # 总迭代次数
+        self.iterations = 30000  # 总迭代次数
         self.position_lr_init = 0.00016  # 位置学习率初始值
         self.position_lr_final = 0.0000016  # 位置学习率最终值
         self.position_lr_delay_mult = 0.01  # 位置学习率延迟乘数
-        self.position_lr_max_steps = 30_000  # 位置学习率最大步数
+        self.position_lr_max_steps = 30000  # 位置学习率最大步数
         self.feature_lr = 0.0025  # 特征学习率
         self.opacity_lr = 0.05  # 不透明度学习率
         self.scaling_lr = 0.005  # 缩放学习率
@@ -90,14 +90,15 @@ class OptimizationParams(ParamGroup):
         self.opacity_cull = 0.05  # 不透明度剔除阈值
 
         # Contribution-based pruning parameters
-        self.prune_ratio = 0.01 # 修剪比例(0-1)
+        self.prune_ratio = 0.05 # 修剪比例(0-1)
         self.contribution_gamma = 0.25 # 贡献度计算参数
-        self.contribution_prune_interval = 1000 # 修剪间隔(迭代次数)
+        self.contribution_prune_interval = 500 # 修剪间隔(迭代次数)
+        self.contribution_prune_until_interval = 10000 # 停止修剪(迭代次数)
 
         self.densification_interval = 100  # 密集化间隔
         self.opacity_reset_interval = 0  # 不透明度重置间隔
         self.densify_from_iter = 500  # 开始密集化的迭代次数
-        self.densify_until_iter = 20_000  # 停止密集化的迭代次数
+        self.densify_until_iter = 20000  # 停止密集化的迭代次数
         self.densify_grad_threshold = 0.0002  # 密集化梯度阈值
         super().__init__(parser, "Optimization Parameters")
 
