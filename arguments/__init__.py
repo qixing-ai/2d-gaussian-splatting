@@ -46,15 +46,21 @@ class ParamGroup:
 
 class ModelParams(ParamGroup): 
     def __init__(self, parser, sentinel=False):
-        self.sh_degree = 3  # 球谐函数的阶数
+        # 路径相关参数
         self._source_path = ""  # 输入数据源路径
         self._model_path = ""  # 模型保存路径
         self._images = "images"  # 图像文件夹名称
+        
+        # 渲染相关参数
+        self.sh_degree = 3  # 球谐函数的阶数
         self._resolution = -1  # 图像分辨率(-1表示原始分辨率)
         self._white_background = False  # 是否使用白色背景
+        self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']  # 渲染输出项列表
+        
+        # 设备和模式参数
         self.data_device = "cuda"  # 数据加载设备(cuda/cpu)
         self.eval = False  # 是否为评估模式
-        self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']  # 渲染输出项列表
+        
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -64,42 +70,59 @@ class ModelParams(ParamGroup):
 
 class PipelineParams(ParamGroup):
     def __init__(self, parser):
+        # 计算方式参数
         self.convert_SHs_python = False  # 是否使用Python计算球谐函数
         self.compute_cov3D_python = False  # 是否使用Python计算3D协方差
+        
+        # 渲染参数
         self.depth_ratio = 0.0  # 深度图混合比例
+        
+        # 调试参数
         self.debug = False  # 是否启用调试模式
+        
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
+        # 基础训练参数
         self.iterations = 30000  # 总迭代次数
+        
+        # 位置学习率参数
         self.position_lr_init = 0.00016  # 位置学习率初始值
         self.position_lr_final = 0.0000016  # 位置学习率最终值
         self.position_lr_delay_mult = 0.01  # 位置学习率延迟乘数
         self.position_lr_max_steps = 30000  # 位置学习率最大步数
+        
+        # 其他学习率参数
         self.feature_lr = 0.0025  # 特征学习率
         self.opacity_lr = 0.05  # 不透明度学习率
         self.scaling_lr = 0.005  # 缩放学习率
         self.rotation_lr = 0.001  # 旋转学习率
-        self.lambda_dssim = 0.3  # DSSIM损失权重
         
+        # 损失函数权重参数
+        self.lambda_dssim = 0.3  # DSSIM损失权重
         self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
-        self.normal_decay_start_iter = 22000  # 法线损失开始衰减的迭代次数
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
+        
+        # 法线相关参数
+        self.normal_decay_start_iter = 22000  # 法线损失开始衰减的迭代次数
+        
+        # 不透明度相关参数
         self.opacity_cull = 0.05  # 不透明度剔除阈值
-
-        # Contribution-based pruning parameters
+        
+        # 基于贡献度的修剪参数
         self.prune_ratio = 0.05 # 修剪比例(0-1)
         self.contribution_gamma = 0.25 # 贡献度计算参数
         self.contribution_prune_interval = 500 # 修剪间隔(迭代次数)
         self.prune_strategy_switch_iter = 10000 # 修剪策略切换迭代次数(从基于贡献修剪切换到动态调整修剪比例)
-
+        
+        # 密集化参数
         self.densification_interval = 100  # 密集化间隔
         self.percent_dense = 0.01  # 密集化百分比
-        self.opacity_reset_interval = 0  # 不透明度重置间隔
         self.densify_from_iter = 500  # 开始密集化的迭代次数
         self.densify_until_iter = 30000  # 停止密集化的迭代次数
         self.densify_grad_threshold = 0.0002  # 密集化梯度阈值
+        
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

@@ -84,7 +84,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # 密度化和修剪
         handle_densification_and_pruning(gaussians, opt, iteration, viewspace_point_tensor, visibility_filter, 
-                                        radii, scene, pipe, background, pruning_manager, dataset.white_background)
+                                        radii, scene, pipe, background, pruning_manager)
 
         # 优化器步骤
         if iteration < opt.iterations:
