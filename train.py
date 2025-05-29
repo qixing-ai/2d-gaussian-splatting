@@ -1,18 +1,15 @@
 import os
 import torch
-from random import randint
-from utils.loss_utils import l1_loss, ssim, ms_ssim_loss, compute_training_losses
+from utils.loss_utils import compute_training_losses
 from utils.training_utils import TrainingStateManager, DynamicPruningManager, handle_densification_and_pruning, get_random_viewpoint, log_training_metrics, evaluate_and_log_validation
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
-from tqdm import tqdm
-from utils.image_utils import psnr, render_net_image
+from utils.image_utils import render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
-import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True

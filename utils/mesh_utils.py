@@ -12,12 +12,10 @@
 import torch
 import numpy as np
 import os
-import math
 from tqdm import tqdm
 from utils.render_utils import save_img_f32, save_img_u8
 from functools import partial
 import open3d as o3d
-import trimesh
 
 def post_process_mesh(mesh, cluster_to_keep=1000):
     """对网格进行后处理，过滤掉漂浮物和断开的部分"""
@@ -111,7 +109,7 @@ class GaussianExtractor(object):
 
     def estimate_bounding_sphere(self):
         """根据相机位姿估计边界球"""
-        from utils.render_utils import transform_poses_pca, focus_point_fn
+        from utils.render_utils import focus_point_fn
         torch.cuda.empty_cache()
         c2ws = np.array([np.linalg.inv(np.asarray((cam.world_view_transform.T).cpu().numpy())) for cam in self.viewpoint_stack])
         poses = c2ws[:,:3,:] @ np.diag([1, -1, -1, 1])

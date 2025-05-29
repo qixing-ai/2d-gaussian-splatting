@@ -5,7 +5,7 @@ from gaussian_renderer import render  # 从gaussian_renderer模块导入render�
 from argparse import ArgumentParser  # 导入命令行参数解析器
 from arguments import ModelParams, PipelineParams, get_combined_args  # 导入参数相关类和方法
 from gaussian_renderer import GaussianModel  # 从gaussian_renderer导入高斯模型类
-from utils.mesh_utils import GaussianExtractor, to_cam_open3d, post_process_mesh  # 导入网格处理工具
+from utils.mesh_utils import GaussianExtractor, post_process_mesh  # 导入网格处理工具
 from utils.render_utils import generate_path, create_videos  # 导入渲染路径和视频创建工具
 
 import open3d as o3d  # 导入Open3D点云处理库

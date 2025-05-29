@@ -14,9 +14,7 @@
 
 import numpy as np
 import os
-import enum
-import types
-from typing import List, Mapping, Optional, Text, Tuple, Union
+from typing import Tuple
 import copy
 from PIL import Image
 import mediapy as media
@@ -120,7 +118,6 @@ def transform_poses_pca(poses: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def generate_ellipse_path(poses: np.ndarray,
                           n_frames: int = 120,
-                          const_speed: bool = True,
                           z_variation: float = 0.,
                           z_phase: float = 0.) -> np.ndarray:
   """Generate an elliptical render path based on the given poses."""
