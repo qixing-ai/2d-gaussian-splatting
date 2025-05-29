@@ -22,6 +22,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -51,6 +52,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_alpha_for_log = 0.0  # 指数移动平均alpha损失
     ema_edge_aware_for_log = 0.0  # 指数移动平均边缘感知损失
 
+    # 动态修剪相关变量
+    current_prune_ratio = opt.prune_ratio  # 当前修剪比例
+    last_point_count = len(gaussians.get_xyz)  # 上次检查的点数
+    point_count_history = []  # 点数历史记录
+
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="ing")  # 进度条
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):        
@@ -72,7 +78,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         Ll1 = l1_loss(image, gt_image)  # 计算L1损失
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * ms_ssim_loss(image, gt_image)  # 总损失
         
-        lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0  # 法线正则化权重
+        # 计算lambda_normal，在normal_decay_start_iter步之后指数衰减到0
+        if iteration <= opt.normal_decay_start_iter or opt.normal_decay_start_iter >= opt.iterations:
+            lambda_normal = opt.lambda_normal
+        else:
+            # 在normal_decay_start_iter到iterations之间指数衰减到0
+            progress = (iteration - opt.normal_decay_start_iter) / (opt.iterations - opt.normal_decay_start_iter)
+            lambda_normal = opt.lambda_normal * np.exp(-5 * progress)  # 使用指数衰减
+            
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0  # 距离正则化权重
         lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0  # alpha正则化权重
         lambda_edge_aware = opt.lambda_edge_aware if iteration > 1000 else 0.0  # 边缘感知正则化权重
@@ -124,7 +137,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.close()
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background),
-                          ema_dist_for_log, ema_normal_for_log, ema_alpha_for_log, ema_edge_aware_for_log, dataset)  # 训练报告
+                          ema_dist_for_log, ema_normal_for_log, ema_alpha_for_log, ema_edge_aware_for_log, dataset, current_prune_ratio)  # 训练报告
             if (iteration in saving_iterations):  # 保存高斯模型
                 scene.save(iteration)
 
@@ -143,7 +156,33 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     background,
                     gamma=opt.contribution_gamma
                 )
-                gaussians.prune_low_contribution(contribution, prune_ratio=opt.prune_ratio)
+                gaussians.prune_low_contribution(contribution, prune_ratio=current_prune_ratio)
+                
+                # 动态调整修剪比例
+                if iteration >= opt.dynamic_prune_start_iter:
+                    current_point_count = len(gaussians.get_xyz)
+                    point_count_history.append(current_point_count)
+                    
+                    # 计算点数变化比例
+                    point_ratio = current_point_count / last_point_count if last_point_count > 0 else 1.0
+                    
+                    # 根据点数变化调整修剪比例（使用硬编码的合理默认值）
+                    target_ratio_min = 0.8  # 目标点数比例下限
+                    target_ratio_max = 1.2  # 目标点数比例上限
+                    prune_ratio_min = 0.01  # 最小修剪比例
+                    prune_ratio_max = 0.15  # 最大修剪比例
+                    adjust_factor = 0.02    # 修剪比例调整幅度
+                    
+                    if point_ratio > target_ratio_max:  # 点数增长过快，增加修剪比例
+                        current_prune_ratio = min(current_prune_ratio + adjust_factor, prune_ratio_max)
+                    elif point_ratio < target_ratio_min:  # 点数减少过快，降低修剪比例
+                        current_prune_ratio = max(current_prune_ratio - adjust_factor, prune_ratio_min)
+                    
+                    last_point_count = current_point_count
+                    
+                    # 记录调整信息
+                    if iteration % (opt.contribution_prune_interval * 10) == 0:
+                        print(f"\n[ITER {iteration}] 点数: {current_point_count}, 变化比例: {point_ratio:.3f}, 修剪比例: {current_prune_ratio:.4f}")
             
             if (opt.opacity_reset_interval > 0 and iteration % opt.opacity_reset_interval == 0) or (dataset.white_background and iteration == opt.densify_from_iter):
                 gaussians.reset_opacity()  # 重置不透明度
@@ -199,7 +238,7 @@ def prepare_output_and_logger(args):
 
 @torch.no_grad()
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs,
-                   ema_dist, ema_normal, ema_alpha, ema_edge_aware, config):
+                   ema_dist, ema_normal, ema_alpha, ema_edge_aware, config, current_prune_ratio=None):
     if tb_writer:  # 记录训练报告到TensorBoard
         tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -209,6 +248,10 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         tb_writer.add_scalar('train_loss_patches/edge_aware_loss', ema_edge_aware, iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
         tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
+        
+        # 记录动态修剪比例
+        if current_prune_ratio is not None:
+            tb_writer.add_scalar('dynamic_pruning/prune_ratio', current_prune_ratio, iteration)
 
         if iteration in testing_iterations:  # 在指定测试迭代时执行以下操作:
         # 2. 准备测试集和训练集样本配置

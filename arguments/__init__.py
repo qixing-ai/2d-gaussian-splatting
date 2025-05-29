@@ -88,6 +88,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_edge_aware = 0 # 边缘感知损失权重(边缘感知曲率损失的权重)
 
         self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
+        self.normal_decay_start_iter = 22000  # 法线损失开始衰减的迭代次数
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
         self.opacity_cull = 0.05  # 不透明度剔除阈值
 
@@ -97,10 +98,13 @@ class OptimizationParams(ParamGroup):
         self.contribution_prune_interval = 500 # 修剪间隔(迭代次数)
         self.contribution_prune_until_interval = 10000 # 停止修剪(迭代次数)
 
+        # Dynamic prune ratio adjustment parameters
+        self.dynamic_prune_start_iter = 10000  # 开始动态调整修剪比例的迭代次数
+
         self.densification_interval = 100  # 密集化间隔
         self.opacity_reset_interval = 0  # 不透明度重置间隔
         self.densify_from_iter = 500  # 开始密集化的迭代次数
-        self.densify_until_iter = 20000  # 停止密集化的迭代次数
+        self.densify_until_iter = 30000  # 停止密集化的迭代次数
         self.densify_grad_threshold = 0.0002  # 密集化梯度阈值
         super().__init__(parser, "Optimization Parameters")
 
