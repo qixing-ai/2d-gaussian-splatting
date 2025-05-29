@@ -304,6 +304,12 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 
+	// 累积不透明度算法相关变量
+	float cumulative_opacity = 0.0f;
+	float opacity_surface_depth = 0.0f;
+	bool surface_found = false;
+	const float epsilon = 0.1f;  // 增强Gaussian数量影响的小常数
+	const float opacity_threshold = 0.6f;  // 累积不透明度阈值
 
 #if RENDER_AXUTILITY
 	// render axutility ouput
@@ -386,6 +392,19 @@ renderCUDA(
 			float alpha = min(0.99f, opa * exp(power));
 			if (alpha < 1.0f / 255.0f)
 				continue;
+
+			// 计算2D Gaussian值
+			float gaussian_2d = exp(power);
+			
+			// 累积不透明度算法：O_i = ∑(j=1 to i) (α_j + ε) * Ĝ_j(x)
+			cumulative_opacity += (alpha + epsilon) * gaussian_2d;
+			
+			// 检查是否找到表面位置
+			if (!surface_found && cumulative_opacity > opacity_threshold) {
+				opacity_surface_depth = depth;
+				surface_found = true;
+			}
+
 			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
 			{
@@ -442,6 +461,8 @@ renderCUDA(
 		for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
 		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
 		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
+		out_others[pix_id + OPACITY_SURFACE_DEPTH_OFFSET * H * W] = opacity_surface_depth;
+		out_others[pix_id + CUMULATIVE_OPACITY_OFFSET * H * W] = cumulative_opacity;
 		// out_others[pix_id + MEDIAN_WEIGHT_OFFSET * H * W] = median_weight;
 #endif
 	}

@@ -210,6 +210,10 @@ renderCUDA(
 	const int median_contributor = inside ? n_contrib[pix_id + H * W] : 0;
 	float dL_dmedian_depth;
 	float dL_dmax_dweight;
+	
+	// 累积不透明度相关的梯度变量
+	float dL_dopacity_surface_depth;
+	float dL_dcumulative_opacity;
 
 	if (inside) {
 		dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
@@ -219,6 +223,8 @@ renderCUDA(
 			dL_dnormal2D[i] = dL_depths[(NORMAL_OFFSET + i) * H * W + pix_id];
 
 		dL_dmedian_depth = dL_depths[MIDDEPTH_OFFSET * H * W + pix_id];
+		dL_dopacity_surface_depth = dL_depths[OPACITY_SURFACE_DEPTH_OFFSET * H * W + pix_id];
+		dL_dcumulative_opacity = dL_depths[CUMULATIVE_OPACITY_OFFSET * H * W + pix_id];
 		// dL_dmax_dweight = dL_depths[MEDIAN_WEIGHT_OFFSET * H * W + pix_id];
 	}
 
@@ -376,6 +382,19 @@ renderCUDA(
 				dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
 				atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
 			}
+			
+			// 累积不透明度的梯度计算
+			// 对于累积不透明度：O_i = ∑(j=1 to i) (α_j + ε) * Ĝ_j(x)
+			// dL/dα_j = dL/dO_i * Ĝ_j(x) + dL/dO_surface * δ(surface_found_at_j) * Ĝ_j(x)
+			const float epsilon = 0.1f;
+			const float gaussian_2d = G;  // exp(power)
+			
+			// 对累积不透明度的贡献
+			dL_dalpha += dL_dcumulative_opacity * gaussian_2d;
+			
+			// 如果这是表面位置确定的Gaussian，还需要考虑表面深度的梯度
+			// 这里简化处理，假设表面位置的梯度主要通过累积不透明度传播
+			// 实际实现中可能需要更复杂的逻辑来确定哪个Gaussian确定了表面位置
 #endif
 
 			dL_dalpha *= T;
