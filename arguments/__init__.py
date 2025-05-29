@@ -81,12 +81,8 @@ class OptimizationParams(ParamGroup):
         self.opacity_lr = 0.05  # 不透明度学习率
         self.scaling_lr = 0.005  # 缩放学习率
         self.rotation_lr = 0.001  # 旋转学习率
-        self.percent_dense = 0.01  # 密集化百分比
         self.lambda_dssim = 0.3  # DSSIM损失权重
         
-        self.lambda_dist = 0 # 没用,这个是为了让表面高斯深度一致的,但是不一定是在表面
-        self.lambda_edge_aware = 0 # 边缘感知损失权重(边缘感知曲率损失的权重)
-
         self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
         self.normal_decay_start_iter = 22000  # 法线损失开始衰减的迭代次数
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
@@ -96,12 +92,10 @@ class OptimizationParams(ParamGroup):
         self.prune_ratio = 0.05 # 修剪比例(0-1)
         self.contribution_gamma = 0.25 # 贡献度计算参数
         self.contribution_prune_interval = 500 # 修剪间隔(迭代次数)
-        self.contribution_prune_until_interval = 10000 # 停止修剪(迭代次数)
-
-        # Dynamic prune ratio adjustment parameters
-        self.dynamic_prune_start_iter = 10000  # 开始动态调整修剪比例的迭代次数
+        self.prune_strategy_switch_iter = 10000 # 修剪策略切换迭代次数(从基于贡献修剪切换到动态调整修剪比例)
 
         self.densification_interval = 100  # 密集化间隔
+        self.percent_dense = 0.01  # 密集化百分比
         self.opacity_reset_interval = 0  # 不透明度重置间隔
         self.densify_from_iter = 500  # 开始密集化的迭代次数
         self.densify_until_iter = 30000  # 停止密集化的迭代次数
