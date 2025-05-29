@@ -65,16 +65,18 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         with torch.no_grad():
             # 更新训练状态
-            training_state.update_ema_losses(loss_dict)
-            training_state.update_progress_bar(iteration, gaussians)
+            training_state.update_progress_bar(iteration, gaussians, loss_dict)
             
             if iteration == opt.iterations:
                 training_state.close_progress_bar()
 
+            # 确保CUDA事件完成后再计算时间
+            torch.cuda.synchronize()
+            elapsed_time = iter_start.elapsed_time(iter_end)
+            
             # 训练报告
-            ema_losses = training_state.get_ema_losses()
-            log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, 
-                               iter_start.elapsed_time(iter_end), len(gaussians.get_xyz), pruning_manager.current_prune_ratio)
+            log_training_metrics(tb_writer, iteration, loss_dict, 
+                               elapsed_time, len(gaussians.get_xyz), pruning_manager.current_prune_ratio)
             evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene, render, (pipe, background))
             
             if iteration in saving_iterations:
@@ -95,9 +97,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
         # 网络GUI处理
-        handle_network_gui(gaussians, dataset, pipe, background, ema_losses['ema_loss'], iteration, opt)
+        handle_network_gui(gaussians, dataset, pipe, background, loss_dict['total_loss'].item(), iteration, opt)
 
-def handle_network_gui(gaussians, dataset, pipe, background, ema_loss, iteration, opt):
+def handle_network_gui(gaussians, dataset, pipe, background, current_loss, iteration, opt):
     """处理网络GUI连接和交互"""
     with torch.no_grad():        
         if network_gui.conn == None:
@@ -112,7 +114,7 @@ def handle_network_gui(gaussians, dataset, pipe, background, ema_loss, iteration
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 metrics_dict = {
                     "#": gaussians.get_opacity.shape[0],
-                    "loss": ema_loss
+                    "loss": current_loss
                 }
                 network_gui.send(net_image_bytes, dataset.source_path, metrics_dict)
                 if do_training and ((iteration < int(opt.iterations)) or not keep_alive):

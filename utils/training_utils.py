@@ -2,41 +2,24 @@ import torch
 from tqdm import tqdm
 
 class TrainingStateManager:
-    """训练状态管理器，负责管理EMA损失、进度条、日志等"""
+    """训练状态管理器，负责管理进度条、日志等"""
     
     def __init__(self, first_iter, total_iterations):
-        self.ema_loss_for_log = 0.0
-        self.ema_normal_for_log = 0.0
-        self.ema_alpha_for_log = 0.0
         self.progress_bar = tqdm(range(first_iter, total_iterations), desc="Training")
-        
-    def update_ema_losses(self, loss_dict):
-        """更新指数移动平均损失"""
-        self.ema_loss_for_log = 0.4 * loss_dict['reconstruction_loss'].item() + 0.6 * self.ema_loss_for_log
-        self.ema_normal_for_log = 0.4 * loss_dict['normal_loss'].item() + 0.6 * self.ema_normal_for_log
-        self.ema_alpha_for_log = 0.4 * loss_dict['alpha_loss'].item() + 0.6 * self.ema_alpha_for_log
     
-    def update_progress_bar(self, iteration, gaussians, update_interval=10):
+    def update_progress_bar(self, iteration, gaussians, loss_dict, update_interval=10):
         """更新进度条"""
         if iteration % update_interval == 0:
-            loss_dict = {
-                "Loss": f"{self.ema_loss_for_log:.{5}f}",
+            progress_dict = {
+                "Loss": f"{loss_dict['total_loss'].item():.{5}f}",
                 "Points": f"{len(gaussians.get_xyz)}"
             }
-            self.progress_bar.set_postfix(loss_dict)
+            self.progress_bar.set_postfix(progress_dict)
             self.progress_bar.update(update_interval)
     
     def close_progress_bar(self):
         """关闭进度条"""
         self.progress_bar.close()
-    
-    def get_ema_losses(self):
-        """获取当前EMA损失值"""
-        return {
-            'ema_loss': self.ema_loss_for_log,
-            'ema_normal': self.ema_normal_for_log,
-            'ema_alpha': self.ema_alpha_for_log
-        }
 
 class DynamicPruningManager:
     """动态修剪管理器"""
@@ -117,43 +100,30 @@ def get_random_viewpoint(viewpoint_stack, scene):
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
     return viewpoint_cam, viewpoint_stack 
 
-def log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, elapsed, total_points, current_prune_ratio=None):
+def log_training_metrics(tb_writer, iteration, loss_dict, elapsed, total_points, current_prune_ratio=None):
     """记录训练指标到TensorBoard"""
     if not tb_writer:
         return
     
-    # 主要损失组件
-    tb_writer.add_scalar('losses/total_loss', loss_dict['total_loss'].item(), iteration)
-    tb_writer.add_scalar('losses/reconstruction_loss', loss_dict['reconstruction_loss'].item(), iteration)
-    tb_writer.add_scalar('losses/normal_loss', loss_dict['normal_loss'].item(), iteration)
-    tb_writer.add_scalar('losses/alpha_loss', loss_dict['alpha_loss'].item(), iteration)
-    
-    # 基础损失组件
-    tb_writer.add_scalar('loss_components/l1_loss', loss_dict['l1_loss'].item(), iteration)
-    tb_writer.add_scalar('loss_components/ms_ssim_loss', loss_dict['ms_ssim_loss'].item(), iteration)
+    # 所有训练指标记录到同一个标量组
+    tb_writer.add_scalar('training/total_loss', loss_dict['total_loss'].item(), iteration)
+    tb_writer.add_scalar('training/reconstruction_loss', loss_dict['reconstruction_loss'].item(), iteration)
+    tb_writer.add_scalar('training/normal_loss', loss_dict['normal_loss'].item(), iteration)
+    tb_writer.add_scalar('training/alpha_loss', loss_dict['alpha_loss'].item(), iteration)
+    tb_writer.add_scalar('training/l1_loss', loss_dict['l1_loss'].item(), iteration)
+    tb_writer.add_scalar('training/ms_ssim_loss', loss_dict['ms_ssim_loss'].item(), iteration)
     
     # Lambda参数（权重）
-    tb_writer.add_scalar('loss_weights/lambda_normal', loss_dict['lambda_normal'], iteration)
-    tb_writer.add_scalar('loss_weights/lambda_alpha', loss_dict['lambda_alpha'], iteration)
-    
-    # EMA平滑损失（用于趋势观察）
-    tb_writer.add_scalar('ema_losses/ema_reconstruction', ema_losses['ema_loss'], iteration)
-    tb_writer.add_scalar('ema_losses/ema_normal', ema_losses['ema_normal'], iteration)
-    tb_writer.add_scalar('ema_losses/ema_alpha', ema_losses['ema_alpha'], iteration)
+    tb_writer.add_scalar('training/lambda_normal', loss_dict['lambda_normal'], iteration)
+    tb_writer.add_scalar('training/lambda_alpha', loss_dict['lambda_alpha'], iteration)
     
     # 训练统计信息
-    tb_writer.add_scalar('training_stats/iter_time', elapsed, iteration)
-    tb_writer.add_scalar('training_stats/total_points', total_points, iteration)
+    tb_writer.add_scalar('training/iter_time', elapsed, iteration)
+    tb_writer.add_scalar('training/total_points', total_points, iteration)
     
     # 动态修剪信息
     if current_prune_ratio is not None:
-        tb_writer.add_scalar('training_stats/prune_ratio', current_prune_ratio, iteration)
-    
-    # 保持向后兼容的记录（如果有其他代码依赖这些名称）
-    tb_writer.add_scalar('train_loss_patches/total_loss', loss_dict['total_loss'].item(), iteration)
-    tb_writer.add_scalar('train_loss_patches/l1_loss', loss_dict['l1_loss'].item(), iteration)
-    tb_writer.add_scalar('train_loss_patches/normal_loss', loss_dict['normal_loss'].item(), iteration)
-    tb_writer.add_scalar('train_loss_patches/alpha_loss', loss_dict['alpha_loss'].item(), iteration)
+        tb_writer.add_scalar('training/prune_ratio', current_prune_ratio, iteration)
 
 def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene, renderFunc, renderArgs):
     """评估验证集并记录结果"""
