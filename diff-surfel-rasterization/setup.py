@@ -30,9 +30,9 @@ setup(
             extra_compile_args={
                 "nvcc": [
                     "-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/"),
-                    "--std=c++14"
+                    "--std=c++17"
                 ],
-                "cxx": ["-std=c++14"]
+                "cxx": ["-std=c++17"]
             })
         ],
     cmdclass={
