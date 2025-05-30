@@ -105,8 +105,15 @@ class OptimizationParams(ParamGroup):
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
         self.lambda_converge = 0.01  # 深度收敛损失权重
         
+        # 自适应法线一致性参数
+        self.lambda_adaptive_normal = 0.05  # 第二阶段自适应法线损失权重
+        self.adaptive_normal_start_iter = 15000  # 开始使用自适应法线算法的迭代次数
+        self.normal_flat_weight = 0.1  # 平坦区域的权重
+        self.normal_edge_weight = 1.0  # 边缘/纹理区域的权重
+        self.normal_gradient_threshold = 0.1  # 梯度阈值，用于区分平坦和边缘区域
+        
         # 法线相关参数
-        self.normal_decay_start_iter = 26000  # 法线损失开始衰减的迭代次数
+        self.normal_decay_start_iter = 15000  # 法线损失开始衰减的迭代次数（向后兼容）
         
         # 不透明度相关参数
         self.opacity_cull = 0.05  # 不透明度剔除阈值

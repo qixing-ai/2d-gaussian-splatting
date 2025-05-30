@@ -76,6 +76,61 @@ def ms_ssim_loss(img1, img2):
     img2 = img2.unsqueeze(0)  # [1, C, H, W]
     return 1 - ms_ssim(img1, img2, data_range=1.0, size_average=True)
 
+def compute_adaptive_normal_weights(image, flat_weight=0.1, edge_weight=1.0, threshold=0.1):
+    """
+    基于图像梯度的自适应法线一致性算法
+    识别图像中平坦区域和纹理丰富/边缘区域，使用不同权重值
+    
+    Args:
+        image: 输入图像 [C, H, W]
+        flat_weight: 平坦区域的权重
+        edge_weight: 边缘/纹理区域的权重
+        threshold: 梯度阈值，用于区分平坦和边缘区域
+    Returns:
+        权重图 [1, H, W]
+    """
+    # 确保图像有正确的维度
+    if image.dim() == 3:
+        image = image.unsqueeze(0)  # [1, C, H, W]
+    
+    # 转换为灰度图像用于梯度计算
+    if image.size(1) == 3:  # RGB图像
+        gray = 0.299 * image[:, 0:1] + 0.587 * image[:, 1:2] + 0.114 * image[:, 2:3]
+    else:
+        gray = image[:, 0:1]  # 已经是单通道
+    
+    # 计算Sobel梯度
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                          dtype=torch.float32, device=image.device).view(1, 1, 3, 3)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                          dtype=torch.float32, device=image.device).view(1, 1, 3, 3)
+    
+    # 计算梯度
+    grad_x = F.conv2d(gray, sobel_x, padding=1)
+    grad_y = F.conv2d(gray, sobel_y, padding=1)
+    
+    # 计算梯度幅值
+    gradient_magnitude = torch.sqrt(grad_x.pow(2) + grad_y.pow(2) + 1e-8)
+    
+    # 应用高斯平滑减少噪声
+    gaussian_kernel = torch.tensor([[1, 2, 1], [2, 4, 2], [1, 2, 1]], 
+                                  dtype=torch.float32, device=image.device).view(1, 1, 3, 3) / 16.0
+    gradient_magnitude = F.conv2d(gradient_magnitude, gaussian_kernel, padding=1)
+    
+    # 自适应阈值：使用梯度的百分位数
+    adaptive_threshold = torch.quantile(gradient_magnitude.flatten(), 0.7)
+    threshold = max(threshold, adaptive_threshold.item())
+    
+    # 创建权重图：高梯度区域使用edge_weight，低梯度区域使用flat_weight
+    weight_map = torch.where(gradient_magnitude > threshold, 
+                           torch.tensor(edge_weight, device=image.device),
+                           torch.tensor(flat_weight, device=image.device))
+    
+    # 平滑权重过渡，避免突变
+    weight_map = F.conv2d(weight_map, gaussian_kernel, padding=1)
+    
+    return weight_map.squeeze(0)  # 返回 [1, H, W]
+
 def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration):
     """
     计算训练过程中的所有损失
@@ -94,12 +149,26 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
     ms_ssim_loss_val = ms_ssim_loss(image, gt_image)
     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * ms_ssim_loss_val
     
-    # 计算lambda_normal，在normal_decay_start_iter步之后指数衰减到0
-    if iteration <= opt.normal_decay_start_iter or opt.normal_decay_start_iter >= opt.iterations:
+    # 计算自适应权重（始终计算，用于监控）
+    adaptive_weights = compute_adaptive_normal_weights(
+        gt_image, 
+        flat_weight=getattr(opt, 'normal_flat_weight', 0.1),
+        edge_weight=getattr(opt, 'normal_edge_weight', 1.0),
+        threshold=getattr(opt, 'normal_gradient_threshold', 0.1)
+    )
+    avg_adaptive_weight = adaptive_weights.mean().item()
+    
+    # 2阶段法线一致性策略：完全去除时间衰减机制
+    adaptive_start_iter = getattr(opt, 'adaptive_normal_start_iter', getattr(opt, 'normal_decay_start_iter', 1000))
+    
+    if iteration <= adaptive_start_iter:
+        # 阶段1：使用固定的法线一致性权重
         lambda_normal = opt.lambda_normal
+        use_adaptive_weights = False
     else:
-        progress = (iteration - opt.normal_decay_start_iter) / (opt.iterations - opt.normal_decay_start_iter)
-        lambda_normal = opt.lambda_normal * np.exp(-5 * progress)
+        # 阶段2：lambda_normal设为0，完全使用自适应权重
+        lambda_normal = 0.0
+        use_adaptive_weights = True
         
     lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0
     
@@ -107,7 +176,15 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
     rend_normal = render_pkg['rend_normal']
     surf_normal = render_pkg['surf_normal']
     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-    normal_loss = lambda_normal * normal_error.mean()
+    
+    if use_adaptive_weights:
+        # 阶段2：使用自适应权重进行像素级调节，使用专门的权重参数
+        lambda_adaptive_normal = opt.lambda_adaptive_normal
+        weighted_normal_error = normal_error * adaptive_weights
+        normal_loss = lambda_adaptive_normal * weighted_normal_error.mean()
+    else:
+        # 阶段1：使用固定权重
+        normal_loss = lambda_normal * normal_error.mean()
     
     # Alpha损失
     alpha_loss = torch.tensor(0.0, device="cuda")
@@ -133,7 +210,9 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
         'alpha_loss': alpha_loss,
         'convergence_loss': convergence_loss,
         'lambda_normal': lambda_normal,
-        'lambda_alpha': lambda_alpha
+        'lambda_alpha': lambda_alpha,
+        'adaptive_normal_weight': avg_adaptive_weight,
+        'adaptive_stage': 2 if use_adaptive_weights else 1
     }
 
 def compute_depth_convergence_loss(render_pkg, viewpoint_cam, k=1.25):
