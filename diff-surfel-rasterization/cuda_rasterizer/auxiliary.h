@@ -27,6 +27,7 @@
 #define DISTORTION_OFFSET 6
 #define OPACITY_SURFACE_DEPTH_OFFSET 7    // 累积不透明度确定的表面深度
 #define CUMULATIVE_OPACITY_OFFSET 8       // 最终累积不透明度值
+#define DEPTH_CONVERGENCE_OFFSET 9        // 深度收敛损失相关信息的起始偏移
 // #define MEDIAN_WEIGHT_OFFSET 7
 
 // distortion helper macros

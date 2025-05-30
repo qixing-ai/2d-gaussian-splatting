@@ -103,6 +103,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_dssim = 0.3  # DSSIM损失权重
         self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
+        self.lambda_converge = 0.01  # 深度收敛损失权重
         
         # 法线相关参数
         self.normal_decay_start_iter = 26000  # 法线损失开始衰减的迭代次数

@@ -105,6 +105,7 @@ def log_training_metrics(tb_writer, iteration, loss_dict, elapsed, total_points,
     tb_writer.add_scalar('training/reconstruction_loss', loss_dict['reconstruction_loss'].item(), iteration)
     tb_writer.add_scalar('training/normal_loss', loss_dict['normal_loss'].item(), iteration)
     tb_writer.add_scalar('training/alpha_loss', loss_dict['alpha_loss'].item(), iteration)
+    tb_writer.add_scalar('training/convergence_loss', loss_dict['convergence_loss'].item(), iteration)
     tb_writer.add_scalar('training/l1_loss', loss_dict['l1_loss'].item(), iteration)
     tb_writer.add_scalar('training/ms_ssim_loss', loss_dict['ms_ssim_loss'].item(), iteration)
     

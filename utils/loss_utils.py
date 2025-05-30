@@ -117,7 +117,12 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
         bg_region = (1.0 - gt_alpha)
         alpha_loss = lambda_alpha * (rend_alpha * bg_region).mean()
     
-    total_loss = loss + normal_loss + alpha_loss
+    # 深度收敛损失
+    convergence_loss = torch.tensor(0.0, device="cuda")
+    if opt.lambda_converge > 0:
+        convergence_loss = opt.lambda_converge * compute_depth_convergence_loss(render_pkg, viewpoint_cam)
+    
+    total_loss = loss + normal_loss + alpha_loss + convergence_loss
     
     return {
         'total_loss': total_loss,
@@ -126,7 +131,67 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
         'reconstruction_loss': loss,
         'normal_loss': normal_loss,
         'alpha_loss': alpha_loss,
+        'convergence_loss': convergence_loss,
         'lambda_normal': lambda_normal,
         'lambda_alpha': lambda_alpha
     }
+
+def compute_depth_convergence_loss(render_pkg, viewpoint_cam, k=1.25):
+    """
+    计算深度收敛损失 - 简化稳定版本
+    基于论文公式：L_converge = Σ min(Ĝ_i(x), Ĝ_{i-1}(x)) * D_i
+    其中 D_i = (d_i - d_{i-1})^2
+    
+    Args:
+        render_pkg: 渲染结果包
+        viewpoint_cam: 视角相机
+        k: 梯度缩放因子
+    Returns:
+        深度收敛损失值
+    """
+    # 获取表面深度和透明度
+    surf_depth = render_pkg['surf_depth']  # [1, H, W]
+    rend_alpha = render_pkg['rend_alpha']  # [1, H, W]
+    
+    # 处理无效深度值
+    surf_depth = torch.nan_to_num(surf_depth, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # 简单的深度平滑
+    kernel = torch.ones(1, 1, 3, 3, device=surf_depth.device) / 9.0
+    surf_depth_smooth = torch.nn.functional.conv2d(surf_depth, kernel, padding=1)
+    
+    # 计算相邻像素的深度差
+    depth_diff_x = surf_depth_smooth[:, :, 1:] - surf_depth_smooth[:, :, :-1]  # [1, H, W-1]
+    depth_diff_y = surf_depth_smooth[:, 1:, :] - surf_depth_smooth[:, :-1, :]  # [1, H-1, W]
+    
+    # 使用Huber损失来减少极值的影响
+    delta = 0.1  # Huber损失的阈值
+    
+    def huber_loss(x, delta):
+        abs_x = torch.abs(x)
+        return torch.where(abs_x <= delta, 0.5 * x.pow(2), delta * (abs_x - 0.5 * delta))
+    
+    depth_loss_x = huber_loss(depth_diff_x, delta)
+    depth_loss_y = huber_loss(depth_diff_y, delta)
+    
+    # 计算权重（使用alpha作为Gaussian值的近似）
+    alpha_weight_x = torch.min(rend_alpha[:, :, 1:], rend_alpha[:, :, :-1]).detach()
+    alpha_weight_y = torch.min(rend_alpha[:, 1:, :], rend_alpha[:, :-1, :]).detach()
+    
+    # 使用sigmoid来平滑权重，避免突然的0值
+    alpha_weight_x = torch.sigmoid(alpha_weight_x * 10)  # 放大后应用sigmoid
+    alpha_weight_y = torch.sigmoid(alpha_weight_y * 10)
+    
+    # 计算加权损失
+    convergence_loss_x = (alpha_weight_x * depth_loss_x).mean()
+    convergence_loss_y = (alpha_weight_y * depth_loss_y).mean()
+    
+    # 总的深度收敛损失
+    convergence_loss = k * (convergence_loss_x + convergence_loss_y)
+    
+    # 数值稳定性检查
+    if torch.isnan(convergence_loss) or torch.isinf(convergence_loss):
+        convergence_loss = torch.tensor(0.0, device=convergence_loss.device)
+    
+    return convergence_loss
 
