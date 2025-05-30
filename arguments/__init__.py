@@ -105,7 +105,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
         
         # 法线相关参数
-        self.normal_decay_start_iter = 22000  # 法线损失开始衰减的迭代次数
+        self.normal_decay_start_iter = 26000  # 法线损失开始衰减的迭代次数
         
         # 不透明度相关参数
         self.opacity_cull = 0.05  # 不透明度剔除阈值

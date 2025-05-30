@@ -24,8 +24,9 @@ def depth_to_normal(view, depth):
     """
     points = depths_to_points(view, depth).reshape(*depth.shape[1:], 3)
     output = torch.zeros_like(points)
-    dx = torch.cat([points[2:, 1:-1] - points[:-2, 1:-1]], dim=0)
-    dy = torch.cat([points[1:-1, 2:] - points[1:-1, :-2]], dim=1)
+    # 使用1像素间距计算梯度
+    dx = points[1:, :-1] - points[:-1, :-1]  # 1像素间距
+    dy = points[:-1, 1:] - points[:-1, :-1]  # 1像素间距
     normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
-    output[1:-1, 1:-1, :] = normal_map
+    output[:-1, :-1, :] = normal_map
     return output
