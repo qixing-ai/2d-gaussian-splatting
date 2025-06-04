@@ -148,7 +148,7 @@ def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene,
     
     validation_configs = [
         {'name': 'test', 'cameras': scene.getTestCameras()}, 
-        {'name': 'train', 'cameras': [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]}
+        {'name': 'train', 'cameras': [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(2, 32, 3)]}
     ]
 
     for config in validation_configs:
@@ -163,8 +163,8 @@ def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene,
             image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
             gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
             
-            # 记录视角展示（前8个视角）
-            if tb_writer and idx < 8:
+            # 记录视角展示（前10个视角）
+            if tb_writer and idx < 10:
                 log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint, config['name'], iteration, idx)
             
             l1_test += l1_loss(image, gt_image).mean().double()
