@@ -2,53 +2,24 @@ import torch
 from tqdm import tqdm
 
 class TrainingStateManager:
-    """训练状态管理器，负责管理EMA损失、进度条、日志等"""
+    """训练状态管理器，负责管理进度条、日志等"""
     
     def __init__(self, first_iter, total_iterations):
-        self.ema_loss_for_log = 0.0
-        self.ema_total_loss = 0.0  # 添加总损失的EMA
-        self.ema_reconstruction_loss = 0.0  # 重建损失的EMA
-        self.ema_normal_loss = 0.0  # 法线损失的EMA
-        self.ema_depth_loss = 0.0  # 深度损失的EMA
         self.progress_bar = tqdm(range(first_iter, total_iterations), desc="Training")
         
-    def update_ema_losses(self, loss_dict):
-        """更新指数移动平均损失"""
-        # 更新总损失EMA（用于进度条显示）
-        self.ema_loss_for_log = 0.4 * loss_dict['total_loss'].item() + 0.6 * self.ema_loss_for_log
-        
-        # 更新各个损失组件的EMA
-        self.ema_total_loss = 0.4 * loss_dict['total_loss'].item() + 0.6 * self.ema_total_loss
-        self.ema_reconstruction_loss = 0.4 * loss_dict['reconstruction_loss'].item() + 0.6 * self.ema_reconstruction_loss
-        self.ema_normal_loss = 0.4 * loss_dict['normal_loss'].item() + 0.6 * self.ema_normal_loss
-        
-        # 深度收敛损失可能为0，需要安全处理
-        depth_loss_val = loss_dict.get('depth_convergence_loss', torch.tensor(0.0)).item()
-        self.ema_depth_loss = 0.4 * depth_loss_val + 0.6 * self.ema_depth_loss
-    
-    def update_progress_bar(self, iteration, gaussians, update_interval=10):
+    def update_progress_bar(self, iteration, gaussians, loss_dict, update_interval=10):
         """更新进度条"""
         if iteration % update_interval == 0:
-            loss_dict = {
-                "Loss": f"{self.ema_loss_for_log:.{5}f}",
+            progress_dict = {
+                "Loss": f"{loss_dict['total_loss'].item():.{5}f}",
                 "Points": f"{len(gaussians.get_xyz)}"
             }
-            self.progress_bar.set_postfix(loss_dict)
+            self.progress_bar.set_postfix(progress_dict)
             self.progress_bar.update(update_interval)
     
     def close_progress_bar(self):
         """关闭进度条"""
         self.progress_bar.close()
-    
-    def get_ema_losses(self):
-        """获取当前EMA损失值"""
-        return {
-            'ema_loss': self.ema_loss_for_log,  # 保持兼容性
-            'ema_total_loss': self.ema_total_loss,
-            'ema_reconstruction_loss': self.ema_reconstruction_loss,
-            'ema_normal_loss': self.ema_normal_loss,
-            'ema_depth_loss': self.ema_depth_loss
-        }
 
 class DynamicPruningManager:
     """动态修剪管理器"""
@@ -123,7 +94,7 @@ def get_random_viewpoint(viewpoint_stack, scene):
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
     return viewpoint_cam, viewpoint_stack 
 
-def log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, elapsed, total_points, current_prune_ratio=None):
+def log_training_metrics(tb_writer, iteration, loss_dict, elapsed, total_points, current_prune_ratio=None):
     """记录训练指标到TensorBoard"""
     if not tb_writer:
         return
@@ -139,20 +110,7 @@ def log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, elapsed, t
     # 深度校正损失（如果存在）
     if 'depth_convergence_loss' in loss_dict:
         tb_writer.add_scalar('训练指标/深度收敛损失', loss_dict['depth_convergence_loss'].item(), iteration)
-    
-    # EMA平滑损失组 - 用于观察训练趋势
-    tb_writer.add_scalar('EMA损失/总损失', ema_losses.get('ema_total_loss', ema_losses['ema_loss']), iteration)
-    tb_writer.add_scalar('EMA损失/重建损失', ema_losses.get('ema_reconstruction_loss', 0), iteration)
-    tb_writer.add_scalar('EMA损失/法线损失', ema_losses.get('ema_normal_loss', 0), iteration)
-    tb_writer.add_scalar('EMA损失/深度损失', ema_losses.get('ema_depth_loss', 0), iteration)
-    
-    # 损失权重记录
-    if 'lambda_normal' in loss_dict:
-        tb_writer.add_scalar('损失权重/法线权重', loss_dict['lambda_normal'], iteration)
-    if 'lambda_alpha' in loss_dict:
-        tb_writer.add_scalar('损失权重/Alpha权重', loss_dict['lambda_alpha'], iteration)
-    if 'lambda_converge' in loss_dict:
-        tb_writer.add_scalar('损失权重/深度收敛权重', loss_dict['lambda_converge'], iteration)
+
     
     # 训练统计
     tb_writer.add_scalar('训练指标/点数量', total_points, iteration)
@@ -161,11 +119,29 @@ def log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, elapsed, t
     # 损失比例分析 - 帮助理解各损失组件的贡献
     total_loss_val = loss_dict['total_loss'].item()
     if total_loss_val > 0:
-        tb_writer.add_scalar('损失比例/重建损失占比', loss_dict['reconstruction_loss'].item() / total_loss_val, iteration)
-        tb_writer.add_scalar('损失比例/法线损失占比', loss_dict['normal_loss'].item() / total_loss_val, iteration)
+        # 计算各损失占比（百分比形式）
+        reconstruction_ratio = (loss_dict['reconstruction_loss'].item() / total_loss_val) * 100
+        l1_ratio = (loss_dict['l1_loss'].item() / total_loss_val) * 100
+        ms_ssim_ratio = (loss_dict['ms_ssim_loss'].item() / total_loss_val) * 100
+        normal_ratio = (loss_dict['normal_loss'].item() / total_loss_val) * 100
+        alpha_ratio = (loss_dict['alpha_loss'].item() / total_loss_val) * 100
+        
+        # 构建损失占比字典
+        loss_ratios = {
+            '重建损失占比(%)': reconstruction_ratio,
+            'L1损失占比(%)': l1_ratio,
+            'MS-SSIM损失占比(%)': ms_ssim_ratio,
+            '法线损失占比(%)': normal_ratio,
+            'Alpha损失占比(%)': alpha_ratio
+        }
+        
+        # 如果存在深度收敛损失，也添加进去
         if 'depth_convergence_loss' in loss_dict:
-            depth_ratio = loss_dict['depth_convergence_loss'].item() / total_loss_val
-            tb_writer.add_scalar('损失比例/深度损失占比', depth_ratio, iteration)
+            depth_ratio = (loss_dict['depth_convergence_loss'].item() / total_loss_val) * 100
+            loss_ratios['深度损失占比(%)'] = depth_ratio
+        
+        # 将所有损失占比记录到同一个图中
+        tb_writer.add_scalars('损失占比分析', loss_ratios, iteration)
 
 def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene, renderFunc, renderArgs):
     """评估验证集并记录结果"""
@@ -178,7 +154,7 @@ def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene,
     
     validation_configs = [
         {'name': 'test', 'cameras': scene.getTestCameras()}, 
-        {'name': 'train', 'cameras': [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(2, 32, 3)]}
+        {'name': 'train', 'cameras': [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(0, 60, 3)]}
     ]
 
     for config in validation_configs:
@@ -193,8 +169,8 @@ def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene,
             image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
             gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
             
-            # 记录视角展示（前10个视角）
-            if tb_writer and idx < 10:
+            # 记录视角展示（前20个视角）
+            if tb_writer and idx < 20:
                 log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint, config['name'], iteration, idx)
             
             l1_test += l1_loss(image, gt_image).mean().double()
