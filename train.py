@@ -52,7 +52,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         viewpoint_cam, viewpoint_stack = get_random_viewpoint(viewpoint_stack, scene)
         
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, iteration=iteration, opt=opt)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
         gt_image = viewpoint_cam.original_image.cuda()
@@ -74,7 +74,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
             log_training_metrics(tb_writer, iteration, loss_dict, 
                                iter_start.elapsed_time(iter_end), len(gaussians.get_xyz), pruning_manager.current_prune_ratio)
-            evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene, render, (pipe, background))
+            evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene, 
+                                       lambda viewpoint, gaussians, pipe, bg: render(viewpoint, gaussians, pipe, bg, iteration=iteration, opt=opt), 
+                                       (pipe, background))
             
             if iteration in saving_iterations:
                 scene.save(iteration)
@@ -102,7 +104,7 @@ def handle_network_gui(gaussians, dataset, pipe, background, current_loss, itera
                 net_image_bytes = None
                 custom_cam, do_training, keep_alive, scaling_modifer, render_mode = network_gui.receive()
                 if custom_cam != None:
-                    render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer)   
+                    render_pkg = render(custom_cam, gaussians, pipe, background, scaling_modifer, iteration=iteration, opt=opt)   
                     net_image = render_net_image(render_pkg, dataset.render_items, render_mode, custom_cam)
                     net_image_bytes = memoryview((torch.clamp(net_image, min=0, max=1.0) * 255).byte().permute(1, 2, 0).contiguous().cpu().numpy())
                 metrics_dict = {

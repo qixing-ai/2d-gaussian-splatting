@@ -16,7 +16,7 @@ from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from utils.point_utils import depth_to_normal
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, iteration=None, opt=None):
     """
     Render the scene. 
     
@@ -141,7 +141,13 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     surf_depth = render_depth_expected * (1-pipe.depth_ratio) + (pipe.depth_ratio) * render_depth_median
     
     # assume the depth points form the 'surface' and generate psudo surface normal for regularizations.
-    surf_normal = depth_to_normal(viewpoint_camera, surf_depth)
+    # 根据迭代次数选择法向量计算算法
+    use_precise_normal = True  # 默认使用精确算法
+    if iteration is not None and opt is not None:
+        # 在 normal_decay_start_iter 之前使用原始算法，之后使用精确算法
+        use_precise_normal = iteration >= opt.normal_decay_start_iter
+    
+    surf_normal = depth_to_normal(viewpoint_camera, surf_depth, use_precise=use_precise_normal)
     surf_normal = surf_normal.permute(2,0,1)
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * (render_alpha).detach()
