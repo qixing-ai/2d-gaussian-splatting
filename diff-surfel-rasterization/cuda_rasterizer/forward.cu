@@ -322,6 +322,12 @@ renderCUDA(
 	bool surface_found = false;
 	const float epsilon = 0.1f;  // 补偿不透明度常数
 	const float surface_threshold = 0.6f;  // 表面阈值
+	
+	// 深度收敛损失变量 - 按照论文实现
+	float convergence_loss = 0.0f;
+	float last_depth = 0.0f;
+	float last_gaussian_value = 0.0f;
+	bool first_gaussian = true;
 #endif
 
 	// Iterate over batches until all done or range is complete
@@ -401,6 +407,24 @@ renderCUDA(
 
 			float w = alpha * T;
 #if RENDER_AXUTILITY
+			// 计算当前高斯值 G_i
+			float current_gaussian_value = exp(power);
+			
+			// 深度收敛损失计算 - 按照论文公式
+			// ℒ_converge = Σ min(G_i(x), G_{i-1}(x)) * D_i
+			// 其中 D_i = (d_i - d_{i-1})²
+			if (!first_gaussian) {
+				float depth_diff = depth - last_depth;
+				float D_i = depth_diff * depth_diff;  // (d_i - d_{i-1})²
+				float weight = min(current_gaussian_value, last_gaussian_value);  // min(G_i, G_{i-1})
+				convergence_loss += weight * D_i;
+			}
+			
+			// 更新上一个高斯的信息
+			last_depth = depth;
+			last_gaussian_value = current_gaussian_value;
+			first_gaussian = false;
+
 			// Render depth distortion map
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 			float A = 1-T;
@@ -462,6 +486,7 @@ renderCUDA(
 		for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
 		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = final_surface_depth;
 		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
+		out_others[pix_id + CONVERGENCE_OFFSET * H * W] = convergence_loss;
 #endif
 	}
 }

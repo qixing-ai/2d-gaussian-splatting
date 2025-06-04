@@ -202,7 +202,6 @@ renderCUDA(
 	float accum_rec[C] = { 0 };
 	float dL_dpixel[C];
 
-#if RENDER_AXUTILITY
 	float dL_dreg;
 	float dL_ddepth;
 	float dL_daccum;
@@ -210,17 +209,7 @@ renderCUDA(
 	const int median_contributor = inside ? n_contrib[pix_id + H * W] : 0;
 	float dL_dmedian_depth;
 	float dL_dmax_dweight;
-
-	if (inside) {
-		dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
-		dL_daccum = dL_depths[ALPHA_OFFSET * H * W + pix_id];
-		dL_dreg = dL_depths[DISTORTION_OFFSET * H * W + pix_id];
-		for (int i = 0; i < 3; i++) 
-			dL_dnormal2D[i] = dL_depths[(NORMAL_OFFSET + i) * H * W + pix_id];
-
-		dL_dmedian_depth = dL_depths[MIDDEPTH_OFFSET * H * W + pix_id];
-		// dL_dmax_dweight = dL_depths[MEDIAN_WEIGHT_OFFSET * H * W + pix_id];
-	}
+	float dL_dconvergence;  // 深度收敛损失的梯度
 
 	// for compute gradient with respect to depth and normal
 	float last_depth = 0;
@@ -233,7 +222,24 @@ renderCUDA(
 	const float final_D2 = inside ? final_Ts[pix_id + 2 * H * W] : 0;
 	const float final_A = 1 - T_final;
 	float last_dL_dT = 0;
-#endif
+	
+	// 深度收敛损失的梯度计算变量
+	float last_depth_conv = 0;
+	float last_gaussian_value_conv = 0;
+	bool first_gaussian_conv = true;
+	const float convergence_factor = 1.25f;  // 论文中的梯度放大因子 k
+
+	if (inside) {
+		dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
+		dL_daccum = dL_depths[ALPHA_OFFSET * H * W + pix_id];
+		dL_dreg = dL_depths[DISTORTION_OFFSET * H * W + pix_id];
+		dL_dconvergence = dL_depths[CONVERGENCE_OFFSET * H * W + pix_id];
+		for (int i = 0; i < 3; i++) 
+			dL_dnormal2D[i] = dL_depths[(NORMAL_OFFSET + i) * H * W + pix_id];
+
+		dL_dmedian_depth = dL_depths[MIDDEPTH_OFFSET * H * W + pix_id];
+		// dL_dmax_dweight = dL_depths[MEDIAN_WEIGHT_OFFSET * H * W + pix_id];
+	}
 
 	if (inside){
 		for (int i = 0; i < C; i++)
@@ -376,6 +382,32 @@ renderCUDA(
 				dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
 				atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
 			}
+			
+			// 深度收敛损失的梯度计算 - 按照论文实现
+			// 计算当前高斯值
+			float current_gaussian_value_conv = G;  // exp(power)
+			
+			// 深度收敛损失梯度传播
+			if (!first_gaussian_conv) {
+				float depth_diff = c_d - last_depth_conv;
+				float D_i = depth_diff * depth_diff;
+				float weight = min(current_gaussian_value_conv, last_gaussian_value_conv);
+				
+				// 对当前深度的梯度 (论文中的梯度放大)
+				float dL_dcurrent_depth = dL_dconvergence * weight * 2.0f * depth_diff * convergence_factor;
+				dL_dz += dL_dcurrent_depth;
+				
+				// 对当前高斯值的梯度
+				if (current_gaussian_value_conv <= last_gaussian_value_conv) {
+					float dL_dcurrent_gaussian = dL_dconvergence * D_i;
+					dL_dalpha += dL_dcurrent_gaussian * opa;  // G = opa * exp(power), 所以 dG/dalpha 包含 opa
+				}
+			}
+			
+			// 更新深度收敛损失的状态
+			last_depth_conv = c_d;
+			last_gaussian_value_conv = current_gaussian_value_conv;
+			first_gaussian_conv = false;
 #endif
 
 			dL_dalpha *= T;

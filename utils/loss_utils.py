@@ -121,15 +121,15 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
     
     # 深度收敛损失
     depth_convergence_loss_val = torch.tensor(0.0, device="cuda")
-    if 'surf_depth' in render_pkg:
-        depth_map = render_pkg['surf_depth']  # [1, H, W]
-        # 去除通道维度，得到 [H, W]
-        if depth_map.dim() == 3 and depth_map.size(0) == 1:
-            depth_map = depth_map.squeeze(0)  # [H, W]
-        
-        # 计算水平和垂直方向的深度梯度
-        depth_grad_x = torch.abs(depth_map[:, 1:] - depth_map[:, :-1])  # [H, W-1]
-        depth_grad_y = torch.abs(depth_map[1:, :] - depth_map[:-1, :])  # [H-1, W]
+    if 'convergence_map' in render_pkg:
+        # 使用CUDA计算的真正深度收敛损失 - 按照论文公式实现
+        convergence_map = render_pkg['convergence_map']
+        depth_convergence_loss_val = lambda_converge * convergence_map.mean()
+    elif 'surf_depth' in render_pkg:
+        # 备用方案：如果CUDA版本不可用，使用简化的深度梯度版本
+        depth_map = render_pkg['surf_depth']
+        depth_grad_x = torch.abs(depth_map[:, :, 1:] - depth_map[:, :, :-1])
+        depth_grad_y = torch.abs(depth_map[:, 1:, :] - depth_map[:-1, :, :])
         depth_convergence_loss_val = lambda_converge * (depth_grad_x.mean() + depth_grad_y.mean())
     
     total_loss = loss + normal_loss + alpha_loss + depth_convergence_loss_val

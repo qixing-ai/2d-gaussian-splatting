@@ -163,8 +163,8 @@ def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene,
             image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
             gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
             
-            # 记录视角展示（前3个视角）
-            if tb_writer and idx < 3:
+            # 记录视角展示（前8个视角）
+            if tb_writer and idx < 8:
                 log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint, config['name'], iteration, idx)
             
             l1_test += l1_loss(image, gt_image).mean().double()
@@ -182,22 +182,10 @@ def log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint,
     """记录可视化结果到TensorBoard"""
     from utils.general_utils import colormap
     
-    # 视角展示组 - 所有可视化内容
+    # 视角展示组 - 只显示法线图
     view_name = f"{config_name}_视角{view_idx+1}"
     
-    # 基础渲染结果
-    tb_writer.add_images(f'视角展示/{view_name}/渲染图像', image[None], global_step=iteration)
-    
-    # 深度图可视化
-    if "surf_depth" in render_pkg:
-        depth = render_pkg["surf_depth"]
-        norm = depth.max()
-        if norm > 0:
-            depth = depth / norm
-            depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
-            tb_writer.add_images(f'视角展示/{view_name}/深度图', depth[None], global_step=iteration)
-
-    # 法线和alpha可视化
+    # 只记录法线可视化
     try:
         if 'rend_normal' in render_pkg:
             rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
@@ -206,13 +194,5 @@ def log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint,
         if 'surf_normal' in render_pkg:
             surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
             tb_writer.add_images(f'视角展示/{view_name}/表面法线', surf_normal[None], global_step=iteration)
-            
-        if 'rend_alpha' in render_pkg:
-            rend_alpha = render_pkg['rend_alpha']
-            tb_writer.add_images(f'视角展示/{view_name}/Alpha通道', rend_alpha[None], global_step=iteration)
     except:
-        pass
-
-    # 第一次测试时记录真实图像作为参考
-    if iteration == 7000:  # 第一次测试迭代
-        tb_writer.add_images(f'视角展示/{view_name}/真实图像', gt_image[None], global_step=iteration) 
+        pass 

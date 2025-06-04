@@ -131,6 +131,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     render_depth_expected = (render_depth_expected / render_alpha)
     render_depth_expected = torch.nan_to_num(render_depth_expected, 0, 0)
     
+    # get convergence loss map - 新增深度收敛损失图
+    convergence_map = allmap[7:8] if allmap.shape[0] > 7 else torch.zeros_like(render_depth_expected)
+    
     # psedo surface attributes
     # surf depth is either median or expected by setting depth_ratio to 1 or 0
     # for bounded scene, use median depth, i.e., depth_ratio = 1; 
@@ -149,6 +152,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             'rend_normal': render_normal,
             'surf_depth': surf_depth,
             'surf_normal': surf_normal,
+            'convergence_map': convergence_map,  # 新增深度收敛损失图
     })
 
     return rets
