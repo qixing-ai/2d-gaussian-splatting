@@ -103,7 +103,9 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
         lambda_normal = opt.lambda_normal * np.exp(-5 * progress)
         
     lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0
-    lambda_converge = getattr(opt, 'lambda_converge', 7.0)
+    
+    # 动态调整深度收敛损失权重 - 避免主导总损失
+    base_lambda_converge = getattr(opt, 'lambda_converge', 0.5)
     
     # 法线损失
     rend_normal = render_pkg['rend_normal']
@@ -124,13 +126,52 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
     if 'convergence_map' in render_pkg:
         # 使用CUDA计算的真正深度收敛损失 - 按照论文公式实现
         convergence_map = render_pkg['convergence_map']
-        depth_convergence_loss_val = lambda_converge * convergence_map.mean()
+        raw_depth_loss = convergence_map.mean()
+        
+        # 动态权重平衡：确保深度损失不会主导总损失
+        # 如果深度损失过大，自动降低权重
+        reconstruction_magnitude = loss.item()
+        depth_magnitude = raw_depth_loss.item()
+        
+        if depth_magnitude > 0 and reconstruction_magnitude > 0:
+            # 计算自适应权重，使深度损失贡献不超过重建损失的50%
+            max_depth_contribution = 0.5 * reconstruction_magnitude
+            if base_lambda_converge * depth_magnitude > max_depth_contribution:
+                adaptive_lambda_converge = max_depth_contribution / depth_magnitude
+                adaptive_lambda_converge = min(adaptive_lambda_converge, base_lambda_converge)
+            else:
+                adaptive_lambda_converge = base_lambda_converge
+        else:
+            adaptive_lambda_converge = base_lambda_converge
+            
+        depth_convergence_loss_val = adaptive_lambda_converge * raw_depth_loss
+        lambda_converge = adaptive_lambda_converge
+        
     elif 'surf_depth' in render_pkg:
         # 备用方案：如果CUDA版本不可用，使用简化的深度梯度版本
         depth_map = render_pkg['surf_depth']
         depth_grad_x = torch.abs(depth_map[:, :, 1:] - depth_map[:, :, :-1])
         depth_grad_y = torch.abs(depth_map[:, 1:, :] - depth_map[:-1, :, :])
-        depth_convergence_loss_val = lambda_converge * (depth_grad_x.mean() + depth_grad_y.mean())
+        raw_depth_loss = depth_grad_x.mean() + depth_grad_y.mean()
+        
+        # 同样的自适应权重机制
+        reconstruction_magnitude = loss.item()
+        depth_magnitude = raw_depth_loss.item()
+        
+        if depth_magnitude > 0 and reconstruction_magnitude > 0:
+            max_depth_contribution = 0.5 * reconstruction_magnitude
+            if base_lambda_converge * depth_magnitude > max_depth_contribution:
+                adaptive_lambda_converge = max_depth_contribution / depth_magnitude
+                adaptive_lambda_converge = min(adaptive_lambda_converge, base_lambda_converge)
+            else:
+                adaptive_lambda_converge = base_lambda_converge
+        else:
+            adaptive_lambda_converge = base_lambda_converge
+            
+        depth_convergence_loss_val = adaptive_lambda_converge * raw_depth_loss
+        lambda_converge = adaptive_lambda_converge
+    else:
+        lambda_converge = base_lambda_converge
     
     total_loss = loss + normal_loss + alpha_loss + depth_convergence_loss_val
     
@@ -144,7 +185,7 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
         'reconstruction_loss': loss,
         'lambda_normal': lambda_normal,
         'lambda_alpha': lambda_alpha,
-        'lambda_converge': lambda_converge,
+        'lambda_converge': lambda_converge,  # 返回实际使用的权重
     }
 
 def compute_training_losses_with_depth_correction(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):
