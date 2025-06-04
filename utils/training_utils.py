@@ -158,10 +158,6 @@ def log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, elapsed, t
     tb_writer.add_scalar('训练指标/点数量', total_points, iteration)
     tb_writer.add_scalar('训练指标/迭代时间(ms)', elapsed, iteration)
     
-    # 动态修剪信息
-    if current_prune_ratio is not None:
-        tb_writer.add_scalar('训练指标/修剪比例', current_prune_ratio, iteration)
-    
     # 损失比例分析 - 帮助理解各损失组件的贡献
     total_loss_val = loss_dict['total_loss'].item()
     if total_loss_val > 0:
