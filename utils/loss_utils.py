@@ -76,6 +76,53 @@ def ms_ssim_loss(img1, img2):
     img2 = img2.unsqueeze(0)  # [1, C, H, W]
     return 1 - ms_ssim(img1, img2, data_range=1.0, size_average=True)
 
+def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=2.0, texture_weight=0.5):
+    """
+    计算图像平坦度权重图
+    Args:
+        gt_image: 真实图像 [C, H, W]
+        kernel_size: 用于计算梯度的卷积核大小
+        flat_weight: 平坦区域的权重
+        texture_weight: 纹理区域的权重
+    Returns:
+        weight_map: 权重图 [1, H, W]
+    """
+    # 转换为灰度图
+    if gt_image.shape[0] == 3:
+        gray = 0.299 * gt_image[0] + 0.587 * gt_image[1] + 0.114 * gt_image[2]
+    else:
+        gray = gt_image[0]
+    
+    # 计算图像梯度 (Sobel算子)
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
+    
+    gray_padded = F.pad(gray.unsqueeze(0).unsqueeze(0), (1, 1, 1, 1), mode='reflect')
+    grad_x = F.conv2d(gray_padded, sobel_x)
+    grad_y = F.conv2d(gray_padded, sobel_y)
+    
+    # 计算梯度幅值
+    gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-8)
+    
+    # 使用高斯滤波平滑梯度图
+    gaussian_kernel = torch.ones(1, 1, kernel_size, kernel_size, device=gt_image.device) / (kernel_size * kernel_size)
+    padding = kernel_size // 2
+    gradient_smooth = F.conv2d(F.pad(gradient_magnitude, (padding, padding, padding, padding), mode='reflect'), gaussian_kernel)
+    
+    # 归一化梯度值到[0,1]
+    grad_min = gradient_smooth.min()
+    grad_max = gradient_smooth.max()
+    if grad_max > grad_min:
+        gradient_norm = (gradient_smooth - grad_min) / (grad_max - grad_min)
+    else:
+        gradient_norm = torch.zeros_like(gradient_smooth)
+    
+    # 计算权重：平坦区域(低梯度)高权重，纹理区域(高梯度)低权重
+    # 使用指数函数使权重变化更平滑
+    weight_map = flat_weight * torch.exp(-3.0 * gradient_norm) + texture_weight
+    
+    return weight_map.squeeze(0)  # [1, H, W]
+
 def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):
     """
     计算训练过程中的所有损失（包含深度校正）
@@ -107,11 +154,25 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
     # 动态调整深度收敛损失权重 - 避免主导总损失
     base_lambda_converge = getattr(opt, 'lambda_converge', 0.5)
     
-    # 法线损失
+    # 自适应法线损失 - 根据图像平坦度调整权重
     rend_normal = render_pkg['rend_normal']
     surf_normal = render_pkg['surf_normal']
     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-    normal_loss = lambda_normal * normal_error.mean()
+    
+    # 计算自适应权重
+    use_adaptive_normal = getattr(opt, 'use_adaptive_normal', True)
+    if use_adaptive_normal:
+        # 获取平坦度权重图
+        flat_weight = getattr(opt, 'normal_flat_weight', 2.0)
+        texture_weight = getattr(opt, 'normal_texture_weight', 0.5)
+        flatness_weight = compute_flatness_weight(gt_image, flat_weight=flat_weight, texture_weight=texture_weight)
+        
+        # 应用自适应权重到法线误差
+        weighted_normal_error = normal_error * flatness_weight
+        normal_loss = lambda_normal * weighted_normal_error.mean()
+    else:
+        # 原始法线损失
+        normal_loss = lambda_normal * normal_error.mean()
     
     # Alpha损失
     alpha_loss = torch.tensor(0.0, device="cuda")
