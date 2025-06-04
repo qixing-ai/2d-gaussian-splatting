@@ -107,14 +107,8 @@ def handle_densification_and_pruning(gaussians, opt, iteration, viewspace_point_
             gamma=opt.contribution_gamma
         )
         
-        current_prune_ratio = pruning_manager.current_prune_ratio
-        if iteration >= opt.prune_strategy_switch_iter:
-            current_point_count = len(gaussians.get_xyz)
-            current_prune_ratio = pruning_manager.update_pruning_ratio(
-                current_point_count, iteration, opt.contribution_prune_interval
-            )
-        
-        gaussians.prune_low_contribution(contribution, prune_ratio=current_prune_ratio)
+        # 使用固定的修剪比例，不再动态调整
+        gaussians.prune_low_contribution(contribution, prune_ratio=pruning_manager.current_prune_ratio)
     
     # 重置不透明度
     if (opt.opacity_reset_interval > 0 and iteration % opt.opacity_reset_interval == 0) or \
