@@ -129,9 +129,6 @@ def safe_state(silent):
     torch.manual_seed(0)
     torch.cuda.set_device(torch.device("cuda:0"))
 
-
-
-
 def colormap(img, cmap='jet'):
     import matplotlib.pyplot as plt
     W, H = img.shape[:2]
@@ -148,3 +145,26 @@ def colormap(img, cmap='jet'):
     img = torch.from_numpy(data / 255.).float().permute(2,0,1)
     plt.close()
     return img
+
+def estimate_scene_radius(camera_poses):
+    """估计场景半径"""
+    if not camera_poses:
+        return 5.0
+    
+    positions = []
+    for pose in camera_poses:
+        if hasattr(pose, 'camera_center'):
+            positions.append(pose.camera_center.cpu().numpy())
+        elif hasattr(pose, 'T'):
+            pos = -pose.R.T @ pose.T
+            positions.append(pos.cpu().numpy())
+    
+    if not positions:
+        return 5.0
+    
+    positions = np.array(positions)
+    center = np.mean(positions, axis=0)
+    distances = np.linalg.norm(positions - center, axis=1)
+    radius = float(np.max(distances))
+    
+    return radius

@@ -76,15 +76,16 @@ def ms_ssim_loss(img1, img2):
     img2 = img2.unsqueeze(0)  # [1, C, H, W]
     return 1 - ms_ssim(img1, img2, data_range=1.0, size_average=True)
 
-def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration):
+def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):
     """
-    计算训练过程中的所有损失
+    计算训练过程中的所有损失（包含深度校正）
     Args:
         render_pkg: 渲染结果包
         gt_image: 真实图像
         viewpoint_cam: 视角相机
         opt: 优化参数
         iteration: 当前迭代次数
+        scene_radius: 场景半径，用于深度收敛损失
     Returns:
         dict: 包含各种损失的字典
     """
@@ -94,7 +95,7 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
     ms_ssim_loss_val = ms_ssim_loss(image, gt_image)
     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * ms_ssim_loss_val
     
-    # 计算lambda_normal，在normal_decay_start_iter步之后指数衰减到0
+    # 计算lambda_normal
     if iteration <= opt.normal_decay_start_iter or opt.normal_decay_start_iter >= opt.iterations:
         lambda_normal = opt.lambda_normal
     else:
@@ -102,6 +103,7 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
         lambda_normal = opt.lambda_normal * np.exp(-5 * progress)
         
     lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0
+    lambda_converge = getattr(opt, 'lambda_converge', 7.0)
     
     # 法线损失
     rend_normal = render_pkg['rend_normal']
@@ -117,16 +119,38 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
         bg_region = (1.0 - gt_alpha)
         alpha_loss = lambda_alpha * (rend_alpha * bg_region).mean()
     
-    total_loss = loss + normal_loss + alpha_loss
+    # 深度收敛损失
+    depth_convergence_loss_val = torch.tensor(0.0, device="cuda")
+    if 'surf_depth' in render_pkg:
+        depth_map = render_pkg['surf_depth']  # [1, H, W]
+        # 去除通道维度，得到 [H, W]
+        if depth_map.dim() == 3 and depth_map.size(0) == 1:
+            depth_map = depth_map.squeeze(0)  # [H, W]
+        
+        # 计算水平和垂直方向的深度梯度
+        depth_grad_x = torch.abs(depth_map[:, 1:] - depth_map[:, :-1])  # [H, W-1]
+        depth_grad_y = torch.abs(depth_map[1:, :] - depth_map[:-1, :])  # [H-1, W]
+        depth_convergence_loss_val = lambda_converge * (depth_grad_x.mean() + depth_grad_y.mean())
+    
+    total_loss = loss + normal_loss + alpha_loss + depth_convergence_loss_val
     
     return {
         'total_loss': total_loss,
         'l1_loss': Ll1,
         'ms_ssim_loss': ms_ssim_loss_val,
-        'reconstruction_loss': loss,
         'normal_loss': normal_loss,
         'alpha_loss': alpha_loss,
+        'depth_convergence_loss': depth_convergence_loss_val,
+        'reconstruction_loss': loss,
         'lambda_normal': lambda_normal,
-        'lambda_alpha': lambda_alpha
+        'lambda_alpha': lambda_alpha,
+        'lambda_converge': lambda_converge,
     }
+
+def compute_training_losses_with_depth_correction(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):
+    """
+    兼容性函数：计算包含深度校正的训练损失
+    这个函数是为了保持向后兼容性，实际上调用的是compute_training_losses
+    """
+    return compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius)
 

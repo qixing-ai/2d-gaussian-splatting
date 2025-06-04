@@ -5,11 +5,12 @@ from utils.training_utils import TrainingStateManager, DynamicPruningManager, ha
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
-from utils.general_utils import safe_state
+from utils.general_utils import safe_state, estimate_scene_radius
 import uuid
 from utils.image_utils import render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+import numpy as np
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -33,10 +34,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing=True)
     iter_end = torch.cuda.Event(enable_timing=True)
 
-    # 初始化管理器
     training_state = TrainingStateManager(first_iter, opt.iterations)
     pruning_manager = DynamicPruningManager(opt.prune_ratio)
     pruning_manager.last_point_count = len(gaussians.get_xyz)
+    
+    scene_radius = estimate_scene_radius(scene.getTrainCameras())
+    print(f"场景半径: {scene_radius:.3f}")
     
     viewpoint_stack = None
     first_iter += 1
@@ -48,30 +51,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # 获取随机视角
         viewpoint_cam, viewpoint_stack = get_random_viewpoint(viewpoint_stack, scene)
         
-        # 渲染
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
         
-        # 计算损失
         gt_image = viewpoint_cam.original_image.cuda()
-        loss_dict = compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration)
+        loss_dict = compute_training_losses(
+            render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius
+        )
         
-        # 反向传播
         loss_dict['total_loss'].backward()
         iter_end.record()
 
         with torch.no_grad():
-            # 更新训练状态
             training_state.update_ema_losses(loss_dict)
             training_state.update_progress_bar(iteration, gaussians)
             
             if iteration == opt.iterations:
                 training_state.close_progress_bar()
 
-            # 训练报告
             ema_losses = training_state.get_ema_losses()
             log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, 
                                iter_start.elapsed_time(iter_end), len(gaussians.get_xyz), pruning_manager.current_prune_ratio)
@@ -80,25 +79,21 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if iteration in saving_iterations:
                 scene.save(iteration)
 
-        # 密度化和修剪
         handle_densification_and_pruning(gaussians, opt, iteration, viewspace_point_tensor, visibility_filter, 
                                         radii, scene, pipe, background, pruning_manager, dataset.white_background)
 
-        # 优化器步骤
         if iteration < opt.iterations:
             gaussians.optimizer.step()
             gaussians.optimizer.zero_grad(set_to_none=True)
 
-        # 保存检查点
         if iteration in checkpoint_iterations:
             print(f"\n[ITER {iteration}] 保存检查点")
             torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-        # 网络GUI处理
         handle_network_gui(gaussians, dataset, pipe, background, ema_losses['ema_loss'], iteration, opt)
 
 def handle_network_gui(gaussians, dataset, pipe, background, ema_loss, iteration, opt):
-    """处理网络GUI连接和交互"""
+    """处理网络GUI"""
     with torch.no_grad():        
         if network_gui.conn == None:
             network_gui.try_connect(dataset.render_items)
@@ -156,7 +151,8 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
-    print("优化 " + args.model_path)
+    print("使用深度校正机制优化 " + args.model_path)
+    print(f"深度收敛损失权重: {args.lambda_converge}")
 
     safe_state(args.quiet)
 
@@ -164,4 +160,4 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint)
 
-    print("\n训练完成。")
+    print("\n深度校正训练完成。")

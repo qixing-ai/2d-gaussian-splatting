@@ -6,15 +6,11 @@ class TrainingStateManager:
     
     def __init__(self, first_iter, total_iterations):
         self.ema_loss_for_log = 0.0
-        self.ema_normal_for_log = 0.0
-        self.ema_alpha_for_log = 0.0
         self.progress_bar = tqdm(range(first_iter, total_iterations), desc="Training")
         
     def update_ema_losses(self, loss_dict):
         """更新指数移动平均损失"""
         self.ema_loss_for_log = 0.4 * loss_dict['reconstruction_loss'].item() + 0.6 * self.ema_loss_for_log
-        self.ema_normal_for_log = 0.4 * loss_dict['normal_loss'].item() + 0.6 * self.ema_normal_for_log
-        self.ema_alpha_for_log = 0.4 * loss_dict['alpha_loss'].item() + 0.6 * self.ema_alpha_for_log
     
     def update_progress_bar(self, iteration, gaussians, update_interval=10):
         """更新进度条"""
@@ -33,9 +29,7 @@ class TrainingStateManager:
     def get_ema_losses(self):
         """获取当前EMA损失值"""
         return {
-            'ema_loss': self.ema_loss_for_log,
-            'ema_normal': self.ema_normal_for_log,
-            'ema_alpha': self.ema_alpha_for_log
+            'ema_loss': self.ema_loss_for_log
         }
 
 class DynamicPruningManager:
@@ -122,38 +116,26 @@ def log_training_metrics(tb_writer, iteration, loss_dict, ema_losses, elapsed, t
     if not tb_writer:
         return
     
-    # 主要损失组件
-    tb_writer.add_scalar('losses/total_loss', loss_dict['total_loss'].item(), iteration)
-    tb_writer.add_scalar('losses/reconstruction_loss', loss_dict['reconstruction_loss'].item(), iteration)
-    tb_writer.add_scalar('losses/normal_loss', loss_dict['normal_loss'].item(), iteration)
-    tb_writer.add_scalar('losses/alpha_loss', loss_dict['alpha_loss'].item(), iteration)
+    # 训练指标组 - 所有重要的训练信息
+    tb_writer.add_scalar('训练指标/总损失', loss_dict['total_loss'].item(), iteration)
+    tb_writer.add_scalar('训练指标/重建损失', loss_dict['reconstruction_loss'].item(), iteration)
+    tb_writer.add_scalar('训练指标/法线损失', loss_dict['normal_loss'].item(), iteration)
+    tb_writer.add_scalar('训练指标/Alpha损失', loss_dict['alpha_loss'].item(), iteration)
     
-    # 基础损失组件
-    tb_writer.add_scalar('loss_components/l1_loss', loss_dict['l1_loss'].item(), iteration)
-    tb_writer.add_scalar('loss_components/ms_ssim_loss', loss_dict['ms_ssim_loss'].item(), iteration)
+    # 深度校正损失（如果存在）
+    if 'depth_convergence_loss' in loss_dict:
+        tb_writer.add_scalar('训练指标/深度收敛损失', loss_dict['depth_convergence_loss'].item(), iteration)
     
-    # Lambda参数（权重）
-    tb_writer.add_scalar('loss_weights/lambda_normal', loss_dict['lambda_normal'], iteration)
-    tb_writer.add_scalar('loss_weights/lambda_alpha', loss_dict['lambda_alpha'], iteration)
-    
-    # EMA平滑损失（用于趋势观察）
-    tb_writer.add_scalar('ema_losses/ema_reconstruction', ema_losses['ema_loss'], iteration)
-    tb_writer.add_scalar('ema_losses/ema_normal', ema_losses['ema_normal'], iteration)
-    tb_writer.add_scalar('ema_losses/ema_alpha', ema_losses['ema_alpha'], iteration)
-    
-    # 训练统计信息
-    tb_writer.add_scalar('training_stats/iter_time', elapsed, iteration)
-    tb_writer.add_scalar('training_stats/total_points', total_points, iteration)
+    # 训练统计
+    tb_writer.add_scalar('训练指标/点数量', total_points, iteration)
+    tb_writer.add_scalar('训练指标/迭代时间(ms)', elapsed, iteration)
     
     # 动态修剪信息
     if current_prune_ratio is not None:
-        tb_writer.add_scalar('training_stats/prune_ratio', current_prune_ratio, iteration)
+        tb_writer.add_scalar('训练指标/修剪比例', current_prune_ratio, iteration)
     
-    # 保持向后兼容的记录（如果有其他代码依赖这些名称）
-    tb_writer.add_scalar('train_loss_patches/total_loss', loss_dict['total_loss'].item(), iteration)
-    tb_writer.add_scalar('train_loss_patches/l1_loss', loss_dict['l1_loss'].item(), iteration)
-    tb_writer.add_scalar('train_loss_patches/normal_loss', loss_dict['normal_loss'].item(), iteration)
-    tb_writer.add_scalar('train_loss_patches/alpha_loss', loss_dict['alpha_loss'].item(), iteration)
+    # EMA平滑损失（用于趋势观察）
+    tb_writer.add_scalar('训练指标/EMA重建损失', ema_losses['ema_loss'], iteration)
 
 def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene, renderFunc, renderArgs):
     """评估验证集并记录结果"""
@@ -181,9 +163,9 @@ def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene,
             image = torch.clamp(render_pkg["render"], 0.0, 1.0).to("cuda")
             gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
             
-            # 记录可视化结果（前5个视角）
-            if tb_writer and idx < 5:
-                log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint, config['name'], iteration, testing_iterations)
+            # 记录视角展示（前3个视角）
+            if tb_writer and idx < 3:
+                log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint, config['name'], iteration, idx)
             
             l1_test += l1_loss(image, gt_image).mean().double()
             psnr_test += psnr(image, gt_image).mean().double()
@@ -194,33 +176,43 @@ def evaluate_and_log_validation(tb_writer, iteration, testing_iterations, scene,
         
         print(f"\n[ITER {iteration}] 评估 {config['name']}: L1 {l1_test} PSNR {psnr_test}")
         
-        if tb_writer:
-            tb_writer.add_scalar(f"{config['name']}/loss_viewpoint - l1_loss", l1_test, iteration)
-            tb_writer.add_scalar(f"{config['name']}/loss_viewpoint - psnr", psnr_test, iteration)
 
-def log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint, config_name, iteration, testing_iterations):
+
+def log_visualization_results(tb_writer, render_pkg, image, gt_image, viewpoint, config_name, iteration, view_idx):
     """记录可视化结果到TensorBoard"""
     from utils.general_utils import colormap
     
+    # 视角展示组 - 所有可视化内容
+    view_name = f"{config_name}_视角{view_idx+1}"
+    
+    # 基础渲染结果
+    tb_writer.add_images(f'视角展示/{view_name}/渲染图像', image[None], global_step=iteration)
+    
     # 深度图可视化
-    depth = render_pkg["surf_depth"]
-    norm = depth.max()
-    depth = depth / norm
-    depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
-    tb_writer.add_images(f"{config_name}_view_{viewpoint.image_name}/depth", depth[None], global_step=iteration)
-    tb_writer.add_images(f"{config_name}_view_{viewpoint.image_name}/render", image[None], global_step=iteration)
+    if "surf_depth" in render_pkg:
+        depth = render_pkg["surf_depth"]
+        norm = depth.max()
+        if norm > 0:
+            depth = depth / norm
+            depth = colormap(depth.cpu().numpy()[0], cmap='turbo')
+            tb_writer.add_images(f'视角展示/{view_name}/深度图', depth[None], global_step=iteration)
 
+    # 法线和alpha可视化
     try:
-        # 法线和alpha可视化
-        rend_alpha = render_pkg['rend_alpha']
-        rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
-        surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
-        tb_writer.add_images(f"{config_name}_view_{viewpoint.image_name}/rend_normal", rend_normal[None], global_step=iteration)
-        tb_writer.add_images(f"{config_name}_view_{viewpoint.image_name}/surf_normal", surf_normal[None], global_step=iteration)
-        tb_writer.add_images(f"{config_name}_view_{viewpoint.image_name}/rend_alpha", rend_alpha[None], global_step=iteration)
+        if 'rend_normal' in render_pkg:
+            rend_normal = render_pkg["rend_normal"] * 0.5 + 0.5
+            tb_writer.add_images(f'视角展示/{view_name}/渲染法线', rend_normal[None], global_step=iteration)
+        
+        if 'surf_normal' in render_pkg:
+            surf_normal = render_pkg["surf_normal"] * 0.5 + 0.5
+            tb_writer.add_images(f'视角展示/{view_name}/表面法线', surf_normal[None], global_step=iteration)
+            
+        if 'rend_alpha' in render_pkg:
+            rend_alpha = render_pkg['rend_alpha']
+            tb_writer.add_images(f'视角展示/{view_name}/Alpha通道', rend_alpha[None], global_step=iteration)
     except:
         pass
 
-    # 第一次测试时记录真实图像
-    if iteration == testing_iterations[0]:
-        tb_writer.add_images(f"{config_name}_view_{viewpoint.image_name}/ground_truth", gt_image[None], global_step=iteration) 
+    # 第一次测试时记录真实图像作为参考
+    if iteration == 7000:  # 第一次测试迭代
+        tb_writer.add_images(f'视角展示/{view_name}/真实图像', gt_image[None], global_step=iteration) 

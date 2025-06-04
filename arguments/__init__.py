@@ -86,6 +86,10 @@ class OptimizationParams(ParamGroup):
         self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
         self.normal_decay_start_iter = 22000  # 法线损失开始衰减的迭代次数
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
+        self.lambda_converge = 7.0  # 深度收敛损失权重
+        # 注意：depth_correction_epsilon 和 depth_correction_threshold 已在CUDA代码中硬编码
+        # epsilon = 0.1, threshold = 0.6
+        self.convergence_factor = 1.25  # 深度收敛因子，用于放大梯度
         self.opacity_cull = 0.05  # 不透明度剔除阈值
 
         # Contribution-based pruning parameters

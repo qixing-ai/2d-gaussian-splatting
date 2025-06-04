@@ -315,7 +315,13 @@ renderCUDA(
 	float median_depth = {0};
 	// float median_weight = {0};
 	float median_contributor = {-1};
-
+	
+	// 深度校正变量
+	float cumulative_opacity_corrected = 0.0f;
+	float corrected_surface_depth = 0.0f;
+	bool surface_found = false;
+	const float epsilon = 0.1f;  // 补偿不透明度常数
+	const float surface_threshold = 0.6f;  // 表面阈值
 #endif
 
 	// Iterate over batches until all done or range is complete
@@ -404,11 +410,22 @@ renderCUDA(
 			M1 += m * w;
 			M2 += m * m * w;
 
+			// 深度校正机制 - 使用累积不透明度确定表面
+			// 计算校正的累积不透明度 O_i = sum((alpha_j + epsilon) * G_j)
+			cumulative_opacity_corrected += (alpha + epsilon) * exp(power);
+			
+			// 检查是否达到表面阈值（0.6）
+			if (!surface_found && cumulative_opacity_corrected >= surface_threshold) {
+				corrected_surface_depth = depth;
+				surface_found = true;
+			}
+
+			// 原有的中位深度计算（基于传输率）
 			if (T > 0.5) {
 				median_depth = depth;
-				// median_weight = w;
 				median_contributor = contributor;
 			}
+			
 			// Render normal map
 			for (int ch=0; ch<3; ch++) N[ch] += normal[ch] * w;
 #endif
@@ -434,15 +451,17 @@ renderCUDA(
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
 #if RENDER_AXUTILITY
+		// 计算最终表面深度：如果找到了校正表面深度，使用它；否则使用原有的中位深度
+		float final_surface_depth = surface_found ? corrected_surface_depth : median_depth;
+		
 		n_contrib[pix_id + H * W] = median_contributor;
 		final_T[pix_id + H * W] = M1;
 		final_T[pix_id + 2 * H * W] = M2;
 		out_others[pix_id + DEPTH_OFFSET * H * W] = D;
 		out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;
 		for (int ch=0; ch<3; ch++) out_others[pix_id + (NORMAL_OFFSET+ch) * H * W] = N[ch];
-		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
+		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = final_surface_depth;
 		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
-		// out_others[pix_id + MEDIAN_WEIGHT_OFFSET * H * W] = median_weight;
 #endif
 	}
 }
