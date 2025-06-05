@@ -76,14 +76,14 @@ def ms_ssim_loss(img1, img2):
     img2 = img2.unsqueeze(0)  # [1, C, H, W]
     return 1 - ms_ssim(img1, img2, data_range=1.0, size_average=True)
 
-def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=2.0, texture_weight=0.5):
+def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weight=0.02):
     """
     计算图像平坦度权重图
     Args:
         gt_image: 真实图像 [C, H, W]
-        kernel_size: 用于计算梯度的卷积核大小
-        flat_weight: 平坦区域的权重
-        texture_weight: 纹理区域的权重
+        kernel_size: 计算梯度的核大小
+        flat_weight: 平坦区域的权重（强权重）
+        edge_weight: 边缘/纹理区域的权重（弱权重）
     Returns:
         weight_map: 权重图 [1, H, W]
     """
@@ -93,39 +93,40 @@ def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=2.0, texture_we
     else:
         gray = gt_image[0]
     
-    # 计算图像梯度 (Sobel算子)
+    # 计算图像梯度 - 使用Sobel算子
     sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
     sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
     
-    gray_padded = F.pad(gray.unsqueeze(0).unsqueeze(0), (1, 1, 1, 1), mode='reflect')
-    grad_x = F.conv2d(gray_padded, sobel_x)
-    grad_y = F.conv2d(gray_padded, sobel_y)
+    gray_expanded = gray.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
+    
+    grad_x = F.conv2d(gray_expanded, sobel_x, padding=1)
+    grad_y = F.conv2d(gray_expanded, sobel_y, padding=1)
     
     # 计算梯度幅值
-    gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-8)
+    gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2).squeeze(0)  # [1, H, W]
     
     # 使用高斯滤波平滑梯度图
     gaussian_kernel = torch.ones(1, 1, kernel_size, kernel_size, device=gt_image.device) / (kernel_size * kernel_size)
-    padding = kernel_size // 2
-    gradient_smooth = F.conv2d(F.pad(gradient_magnitude, (padding, padding, padding, padding), mode='reflect'), gaussian_kernel)
+    gradient_magnitude = F.conv2d(gradient_magnitude.unsqueeze(0), gaussian_kernel, padding=kernel_size//2).squeeze(0)
     
-    # 归一化梯度值到[0,1]
-    grad_min = gradient_smooth.min()
-    grad_max = gradient_smooth.max()
+    # 归一化梯度幅值到[0,1]
+    grad_min = gradient_magnitude.min()
+    grad_max = gradient_magnitude.max()
     if grad_max > grad_min:
-        gradient_norm = (gradient_smooth - grad_min) / (grad_max - grad_min)
+        gradient_normalized = (gradient_magnitude - grad_min) / (grad_max - grad_min)
     else:
-        gradient_norm = torch.zeros_like(gradient_smooth)
+        gradient_normalized = torch.zeros_like(gradient_magnitude)
     
-    # 计算权重：平坦区域(低梯度)高权重，纹理区域(高梯度)低权重
-    # 使用指数函数使权重变化更平滑
-    weight_map = flat_weight * torch.exp(-3.0 * gradient_norm) + texture_weight
+    # 计算自适应权重：平坦区域(低梯度)用强权重，边缘区域(高梯度)用弱权重
+    # 使用反向映射：梯度越小权重越大
+    flatness_score = 1.0 - gradient_normalized  # 平坦度分数：0(边缘) -> 1(平坦)
+    weight_map = edge_weight + (flat_weight - edge_weight) * flatness_score
     
-    return weight_map.squeeze(0)  # [1, H, W]
+    return weight_map
 
 def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):
     """
-    计算训练过程中的所有损失（包含深度校正）
+    计算训练过程中的所有损失（包含自适应法线一致性损失）
     Args:
         render_pkg: 渲染结果包
         gt_image: 真实图像
@@ -141,38 +142,30 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
     Ll1 = l1_loss(image, gt_image)
     ms_ssim_loss_val = ms_ssim_loss(image, gt_image)
     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * ms_ssim_loss_val
-    
-    # 计算lambda_normal
-    if iteration <= opt.normal_decay_start_iter or opt.normal_decay_start_iter >= opt.iterations:
-        lambda_normal = opt.lambda_normal
-    else:
-        progress = (iteration - opt.normal_decay_start_iter) / (opt.iterations - opt.normal_decay_start_iter)
-        lambda_normal = opt.lambda_normal * np.exp(-5 * progress)
         
     lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0
     
     # 动态调整深度收敛损失权重 - 避免主导总损失
     base_lambda_converge = getattr(opt, 'lambda_converge', 0.5)
     
-    # 自适应法线损失 - 根据图像平坦度调整权重
+    # 自适应法线损失 - 替代原有的全局lambda_normal
     rend_normal = render_pkg['rend_normal']
     surf_normal = render_pkg['surf_normal']
-    normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
     
-    # 计算自适应权重
-    use_adaptive_normal = getattr(opt, 'use_adaptive_normal', True)
-    if use_adaptive_normal:
-        # 获取平坦度权重图
-        flat_weight = getattr(opt, 'normal_flat_weight', 2.0)
-        texture_weight = getattr(opt, 'normal_texture_weight', 0.5)
-        flatness_weight = compute_flatness_weight(gt_image, flat_weight=flat_weight, texture_weight=texture_weight)
-        
-        # 应用自适应权重到法线误差
-        weighted_normal_error = normal_error * flatness_weight
-        normal_loss = lambda_normal * weighted_normal_error.mean()
-    else:
-        # 原始法线损失
-        normal_loss = lambda_normal * normal_error.mean()
+    # 计算基础法线误差
+    normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))  # [H, W]
+    
+    # 计算自适应权重图
+    adaptive_weights = compute_flatness_weight(
+        gt_image, 
+        kernel_size=getattr(opt, 'flatness_kernel_size', 5),
+        flat_weight=getattr(opt, 'flat_normal_weight', 0.1),
+        edge_weight=getattr(opt, 'edge_normal_weight', 0.02)
+    )  # [1, H, W]
+    
+    # 应用自适应权重
+    weighted_normal_error = normal_error * adaptive_weights.squeeze(0)  # [H, W]
+    normal_loss = weighted_normal_error.mean()
     
     # Alpha损失
     alpha_loss = torch.tensor(0.0, device="cuda")
@@ -244,9 +237,9 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
         'alpha_loss': alpha_loss,
         'depth_convergence_loss': depth_convergence_loss_val,
         'reconstruction_loss': loss,
-        'lambda_normal': lambda_normal,
         'lambda_alpha': lambda_alpha,
         'lambda_converge': lambda_converge,  # 返回实际使用的权重
+        'adaptive_normal_weights': adaptive_weights.mean().item(),  # 返回平均自适应权重用于监控
     }
 
 def compute_training_losses_with_depth_correction(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):

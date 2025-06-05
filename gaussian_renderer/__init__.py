@@ -141,13 +141,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     surf_depth = render_depth_expected * (1-pipe.depth_ratio) + (pipe.depth_ratio) * render_depth_median
     
     # assume the depth points form the 'surface' and generate psudo surface normal for regularizations.
-    # 根据迭代次数选择法向量计算算法
-    use_precise_normal = True  # 默认使用精确算法
-    if iteration is not None and opt is not None:
-        # 在 normal_decay_start_iter 之前使用原始算法，之后使用精确算法
-        use_precise_normal = iteration >= opt.normal_decay_start_iter
-    
-    surf_normal = depth_to_normal(viewpoint_camera, surf_depth, use_precise=use_precise_normal)
+    # 默认使用精确的1像素间距算法
+    surf_normal = depth_to_normal(viewpoint_camera, surf_depth, use_precise=True)
     surf_normal = surf_normal.permute(2,0,1)
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * (render_alpha).detach()

@@ -107,6 +107,10 @@ def log_training_metrics(tb_writer, iteration, loss_dict, elapsed, total_points,
     tb_writer.add_scalar('训练指标/法线损失', loss_dict['normal_loss'].item(), iteration)
     tb_writer.add_scalar('训练指标/Alpha损失', loss_dict['alpha_loss'].item(), iteration)
     
+    # 自适应法线权重监控
+    if 'adaptive_normal_weights' in loss_dict:
+        tb_writer.add_scalar('训练指标/自适应法线权重', loss_dict['adaptive_normal_weights'], iteration)
+    
     # 深度校正损失（如果存在）
     if 'depth_convergence_loss' in loss_dict:
         tb_writer.add_scalar('训练指标/深度收敛损失', loss_dict['depth_convergence_loss'].item(), iteration)
@@ -131,7 +135,7 @@ def log_training_metrics(tb_writer, iteration, loss_dict, elapsed, total_points,
             '重建损失占比(%)': reconstruction_ratio,
             'L1损失占比(%)': l1_ratio,
             'MS-SSIM损失占比(%)': ms_ssim_ratio,
-            '法线损失占比(%)': normal_ratio,
+            '自适应法线损失占比(%)': normal_ratio,
             'Alpha损失占比(%)': alpha_ratio
         }
         

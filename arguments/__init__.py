@@ -83,19 +83,13 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001  # 旋转学习率
         self.lambda_dssim = 0.3  # DSSIM损失权重
         
-        self.lambda_normal = 0.05  # 法线损失权重,非常有用这个是为了让法线一致的,高斯深度也会被一致话
-        
-        # 自适应法线损失参数
-        self.use_adaptive_normal = True  # 是否使用自适应法线损失
-        self.normal_flat_weight = 2.0    # 平坦区域的法线损失权重
-        self.normal_texture_weight = 0.5 # 纹理区域的法线损失权重
-        
-        self.normal_decay_start_iter = 22000  # 法线损失开始衰减的迭代次数
-        # 训练前期使用稳定的2像素间距算法，确保训练稳定性
-        # 训练后期使用精确的1像素间距算法，提升细节质量
+        # 自适应法线一致性损失参数 - 替代原有的lambda_normal
+        self.flat_normal_weight = 0.01  # 平坦区域的法线损失权重（强权重）
+        self.edge_normal_weight = 0.0001  # 边缘/纹理区域的法线损失权重（弱权重）
+        self.flatness_kernel_size = 1  # 计算平坦度的核大小
 
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
-        self.lambda_converge = 0.5  # 深度收敛损失权重 (从7.0降低到0.5，避免主导总损失)
+        self.lambda_converge = 0.01  # 深度收敛损失权重 (从7.0降低到0.5，避免主导总损失)
 
         # 注意：depth_correction_epsilon 和 depth_correction_threshold 已在CUDA代码中硬编码
         # epsilon = 0.1, threshold = 0.6 convergence_factor = 1.25  # 深度收敛因子，用于放大梯度
