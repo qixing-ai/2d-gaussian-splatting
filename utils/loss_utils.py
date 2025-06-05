@@ -76,6 +76,32 @@ def ms_ssim_loss(img1, img2):
     img2 = img2.unsqueeze(0)  # [1, C, H, W]
     return 1 - ms_ssim(img1, img2, data_range=1.0, size_average=True)
 
+def create_gaussian_kernel_2d(kernel_size, sigma=1.0):
+    """
+    创建真正的2D高斯滤波核
+    Args:
+        kernel_size: 核大小（奇数）
+        sigma: 高斯分布的标准差
+    Returns:
+        gaussian_kernel: [1, 1, kernel_size, kernel_size] 的高斯核
+    """
+    # 确保kernel_size是奇数
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    
+    # 创建坐标网格
+    coords = torch.arange(kernel_size, dtype=torch.float32) - kernel_size // 2
+    x, y = torch.meshgrid(coords, coords, indexing='ij')
+    
+    # 计算高斯分布
+    gaussian_2d = torch.exp(-(x**2 + y**2) / (2 * sigma**2))
+    
+    # 归一化使总和为1
+    gaussian_2d = gaussian_2d / gaussian_2d.sum()
+    
+    # 添加batch和channel维度
+    return gaussian_2d.unsqueeze(0).unsqueeze(0)
+
 def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weight=0.02):
     """
     计算图像平坦度权重图
@@ -105,15 +131,8 @@ def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weigh
     # 计算梯度幅值
     gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2).squeeze(0)  # [1, H, W]
     
-    # 创建真正的高斯滤波核
-    def create_gaussian_kernel(size, sigma=1.0):
-        coords = torch.arange(size, dtype=torch.float32, device=gt_image.device) - size // 2
-        g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
-        g = g / g.sum()
-        return g.outer(g).unsqueeze(0).unsqueeze(0)
-    
     # 使用真正的高斯滤波平滑梯度图
-    gaussian_kernel = create_gaussian_kernel(kernel_size, sigma=1.0)
+    gaussian_kernel = create_gaussian_kernel_2d(kernel_size, sigma=1.0).to(gt_image.device)
     gradient_magnitude = F.conv2d(gradient_magnitude.unsqueeze(0), gaussian_kernel, padding=kernel_size//2).squeeze(0)
     
     # 归一化梯度幅值到[0,1]
@@ -152,26 +171,26 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
         
     lambda_alpha = opt.lambda_alpha if iteration > 100 else 0.0
     
-    # 自适应法线损失 - 基于渲染法线的置信度计算权重
+    # 动态调整深度收敛损失权重 - 避免主导总损失
+    base_lambda_converge = getattr(opt, 'lambda_converge', 0.5)
+    
+    # 自适应法线损失 - 替代原有的全局lambda_normal
     rend_normal = render_pkg['rend_normal']
     surf_normal = render_pkg['surf_normal']
     
     # 计算基础法线误差
     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))  # [H, W]
     
-    # 基于法线一致性计算自适应权重，而非基于图像梯度
-    normal_consistency = torch.abs((rend_normal * surf_normal).sum(dim=0))  # [H, W]
-    
-    # 高一致性区域使用强权重，低一致性区域使用弱权重
-    flat_weight = getattr(opt, 'flat_normal_weight', 0.01)
-    edge_weight = getattr(opt, 'edge_normal_weight', 0.0001)
-    
-    # 使用sigmoid函数平滑过渡，避免硬阈值
-    consistency_threshold = 0.8
-    adaptive_weights = edge_weight + (flat_weight - edge_weight) * torch.sigmoid(10 * (normal_consistency - consistency_threshold))
+    # 计算自适应权重图
+    adaptive_weights = compute_flatness_weight(
+        gt_image, 
+        kernel_size=getattr(opt, 'flatness_kernel_size', 5),
+        flat_weight=getattr(opt, 'flat_normal_weight', 0.1),
+        edge_weight=getattr(opt, 'edge_normal_weight', 0.02)
+    )  # [1, H, W]
     
     # 应用自适应权重
-    weighted_normal_error = normal_error * adaptive_weights  # [H, W]
+    weighted_normal_error = normal_error * adaptive_weights.squeeze(0)  # [H, W]
     normal_loss = weighted_normal_error.mean()
     
     # Alpha损失
@@ -184,19 +203,55 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
     
     # 深度收敛损失
     depth_convergence_loss_val = torch.tensor(0.0, device="cuda")
-    lambda_converge = getattr(opt, 'lambda_converge', 0.01)
-    
     if 'convergence_map' in render_pkg:
-        # 使用CUDA计算的深度收敛损失 - 使用固定权重避免训练不稳定
+        # 使用CUDA计算的真正深度收敛损失 - 按照论文公式实现
         convergence_map = render_pkg['convergence_map']
-        depth_convergence_loss_val = lambda_converge * convergence_map.mean()
+        raw_depth_loss = convergence_map.mean()
+        
+        # 动态权重平衡：确保深度损失不会主导总损失
+        # 如果深度损失过大，自动降低权重
+        reconstruction_magnitude = loss.item()
+        depth_magnitude = raw_depth_loss.item()
+        
+        if depth_magnitude > 0 and reconstruction_magnitude > 0:
+            # 计算自适应权重，使深度损失贡献不超过重建损失的50%
+            max_depth_contribution = 0.5 * reconstruction_magnitude
+            if base_lambda_converge * depth_magnitude > max_depth_contribution:
+                adaptive_lambda_converge = max_depth_contribution / depth_magnitude
+                adaptive_lambda_converge = min(adaptive_lambda_converge, base_lambda_converge)
+            else:
+                adaptive_lambda_converge = base_lambda_converge
+        else:
+            adaptive_lambda_converge = base_lambda_converge
+            
+        depth_convergence_loss_val = adaptive_lambda_converge * raw_depth_loss
+        lambda_converge = adaptive_lambda_converge
         
     elif 'surf_depth' in render_pkg:
         # 备用方案：如果CUDA版本不可用，使用简化的深度梯度版本
         depth_map = render_pkg['surf_depth']
         depth_grad_x = torch.abs(depth_map[:, :, 1:] - depth_map[:, :, :-1])
         depth_grad_y = torch.abs(depth_map[:, 1:, :] - depth_map[:-1, :, :])
-        depth_convergence_loss_val = lambda_converge * (depth_grad_x.mean() + depth_grad_y.mean())
+        raw_depth_loss = depth_grad_x.mean() + depth_grad_y.mean()
+        
+        # 同样的自适应权重机制
+        reconstruction_magnitude = loss.item()
+        depth_magnitude = raw_depth_loss.item()
+        
+        if depth_magnitude > 0 and reconstruction_magnitude > 0:
+            max_depth_contribution = 0.5 * reconstruction_magnitude
+            if base_lambda_converge * depth_magnitude > max_depth_contribution:
+                adaptive_lambda_converge = max_depth_contribution / depth_magnitude
+                adaptive_lambda_converge = min(adaptive_lambda_converge, base_lambda_converge)
+            else:
+                adaptive_lambda_converge = base_lambda_converge
+        else:
+            adaptive_lambda_converge = base_lambda_converge
+            
+        depth_convergence_loss_val = adaptive_lambda_converge * raw_depth_loss
+        lambda_converge = adaptive_lambda_converge
+    else:
+        lambda_converge = base_lambda_converge
     
     total_loss = loss + normal_loss + alpha_loss + depth_convergence_loss_val
     
@@ -210,7 +265,7 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
         'reconstruction_loss': loss,
         'lambda_alpha': lambda_alpha,
         'lambda_converge': lambda_converge,  # 返回实际使用的权重
-        'normal_consistency': normal_consistency.mean().item(),  # 返回平均法线一致性用于监控
+        'adaptive_normal_weights': adaptive_weights.mean().item(),  # 返回平均自适应权重用于监控
     }
 
 def compute_training_losses_with_depth_correction(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):
