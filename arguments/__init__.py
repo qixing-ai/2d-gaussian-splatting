@@ -86,7 +86,7 @@ class OptimizationParams(ParamGroup):
         # 自适应法线一致性损失参数 - 替代原有的lambda_normal
         self.flat_normal_weight = 0.01  # 平坦区域的法线损失权重（强权重）
         self.edge_normal_weight = 0.0001  # 边缘/纹理区域的法线损失权重（弱权重）
-        self.flatness_kernel_size = 1  # 计算平坦度的核大小
+        self.flatness_kernel_size = 3  # 计算平坦度的核大小
 
         self.lambda_alpha = 0.1 # 透明度损失权重(控制背景点透明度的权重)
         self.lambda_converge = 0.01  # 深度收敛损失权重 (从7.0降低到0.5，避免主导总损失)
