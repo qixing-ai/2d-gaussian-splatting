@@ -91,6 +91,9 @@ def get_random_viewpoint(viewpoint_stack, scene):
     from random import randint
     if not viewpoint_stack:
         viewpoint_stack = scene.getTrainCameras().copy()
+        # 确保每个视角都有正确的ID
+        for i, cam in enumerate(viewpoint_stack):
+            cam.id = i
     viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
     return viewpoint_cam, viewpoint_stack 
 
@@ -107,10 +110,7 @@ def log_training_metrics(tb_writer, iteration, loss_dict, elapsed, total_points,
     tb_writer.add_scalar('训练指标/法线损失', loss_dict['normal_loss'].item(), iteration)
     tb_writer.add_scalar('训练指标/Alpha损失', loss_dict['alpha_loss'].item(), iteration)
     
-    # 自适应法线权重监控
-    if 'adaptive_normal_weights' in loss_dict:
-        tb_writer.add_scalar('训练指标/自适应法线权重', loss_dict['adaptive_normal_weights'], iteration)
-    
+
     # 深度校正损失（如果存在）
     if 'depth_convergence_loss' in loss_dict:
         tb_writer.add_scalar('训练指标/深度收敛损失', loss_dict['depth_convergence_loss'].item(), iteration)

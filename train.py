@@ -1,6 +1,6 @@
 import os
 import torch
-from utils.loss_utils import compute_training_losses
+from utils.loss_utils import compute_training_losses, precompute_flatness_weights
 from utils.training_utils import TrainingStateManager, DynamicPruningManager, handle_densification_and_pruning, get_random_viewpoint, log_training_metrics, evaluate_and_log_validation
 from gaussian_renderer import render, network_gui
 import sys
@@ -39,6 +39,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     pruning_manager.last_point_count = len(gaussians.get_xyz)
     
     scene_radius = estimate_scene_radius(scene.getTrainCameras())
+    
+    # 预计算所有训练视角的平坦区域权重
+    precompute_flatness_weights(
+        scene.getTrainCameras(),
+        kernel_size=opt.flatness_kernel_size,
+        flat_weight=opt.flat_normal_weight,
+        edge_weight=opt.edge_normal_weight
+    )
     
     viewpoint_stack = None
     first_iter += 1

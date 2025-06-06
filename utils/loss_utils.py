@@ -102,57 +102,9 @@ def create_gaussian_kernel_2d(kernel_size, sigma=1.0):
     # 添加batch和channel维度
     return gaussian_2d.unsqueeze(0).unsqueeze(0)
 
-def compute_flatness_weight_legacy(gt_image, kernel_size=5, flat_weight=0.1, edge_weight=0.02):
-    """
-    原始的简单平坦度权重计算方法（向后兼容）
-    Args:
-        gt_image: 真实图像 [C, H, W]
-        kernel_size: 计算梯度的核大小
-        flat_weight: 平坦区域的权重（强权重）
-        edge_weight: 边缘/纹理区域的权重（弱权重）
-    Returns:
-        weight_map: 权重图 [1, H, W]
-    """
-    # 转换为灰度图
-    if gt_image.shape[0] == 3:
-        gray = 0.299 * gt_image[0] + 0.587 * gt_image[1] + 0.114 * gt_image[2]
-    else:
-        gray = gt_image[0]
-    
-    # 计算图像梯度 - 使用基础Sobel算子
-    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
-    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
-    
-    gray_expanded = gray.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
-    
-    grad_x = F.conv2d(gray_expanded, sobel_x, padding=1)
-    grad_y = F.conv2d(gray_expanded, sobel_y, padding=1)
-    
-    # 计算梯度幅值
-    gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2).squeeze(0)  # [1, H, W]
-    
-    # 使用基础高斯滤波平滑梯度图
-    gaussian_kernel = create_gaussian_kernel_2d(kernel_size, sigma=1.0).to(gt_image.device)
-    gradient_magnitude = F.conv2d(gradient_magnitude.unsqueeze(0), gaussian_kernel, padding=kernel_size//2).squeeze(0)
-    
-    # 归一化梯度幅值到[0,1]
-    grad_min = gradient_magnitude.min()
-    grad_max = gradient_magnitude.max()
-    if grad_max > grad_min:
-        gradient_normalized = (gradient_magnitude - grad_min) / (grad_max - grad_min)
-    else:
-        gradient_normalized = torch.zeros_like(gradient_magnitude)
-    
-    # 计算自适应权重：平坦区域(低梯度)用强权重，边缘区域(高梯度)用弱权重
-    # 使用反向映射：梯度越小权重越大
-    flatness_score = 1.0 - gradient_normalized  # 平坦度分数：0(边缘) -> 1(平坦)
-    weight_map = edge_weight + (flat_weight - edge_weight) * flatness_score
-    
-    return weight_map
-
 def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weight=0.02):
     """
-    计算图像平坦度权重图 - 改进版本，使用更精确的边缘检测
+    计算图像平坦度权重图 - 使用多方向梯度检测
     Args:
         gt_image: 真实图像 [C, H, W]
         kernel_size: 计算梯度的核大小
@@ -161,6 +113,8 @@ def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weigh
     Returns:
         weight_map: 权重图 [1, H, W]
     """
+    device = gt_image.device  # 获取输入图像的设备
+    
     # 转换为灰度图
     if gt_image.shape[0] == 3:
         gray = 0.299 * gt_image[0] + 0.587 * gt_image[1] + 0.114 * gt_image[2]
@@ -171,12 +125,12 @@ def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weigh
     
     # 改进1: 使用多方向梯度检测，包括对角线方向
     # Sobel算子 - 水平和垂直
-    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
-    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+    sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
     
     # 对角线方向的边缘检测
-    diagonal_1 = torch.tensor([[-2, -1, 0], [-1, 0, 1], [0, 1, 2]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
-    diagonal_2 = torch.tensor([[0, 1, 2], [-1, 0, 1], [-2, -1, 0]], dtype=torch.float32, device=gt_image.device).unsqueeze(0).unsqueeze(0)
+    diagonal_1 = torch.tensor([[-2, -1, 0], [-1, 0, 1], [0, 1, 2]], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+    diagonal_2 = torch.tensor([[0, 1, 2], [-1, 0, 1], [-2, -1, 0]], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
     
     # 计算多方向梯度
     grad_x = F.conv2d(gray_expanded, sobel_x, padding=1)
@@ -188,7 +142,7 @@ def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weigh
     gradient_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 0.5 * (grad_d1**2 + grad_d2**2)).squeeze(0)  # [1, H, W]
     
     # 改进3: 使用更大的高斯核进行平滑，减少噪声影响
-    gaussian_kernel = create_gaussian_kernel_2d(kernel_size, sigma=kernel_size/3.0).to(gt_image.device)
+    gaussian_kernel = create_gaussian_kernel_2d(kernel_size, sigma=kernel_size/3.0).to(device)
     gradient_magnitude = F.conv2d(gradient_magnitude.unsqueeze(0), gaussian_kernel, padding=kernel_size//2).squeeze(0)
     
     # 改进4: 使用自适应阈值，基于图像的梯度分布
@@ -222,13 +176,58 @@ def compute_flatness_weight(gt_image, kernel_size=5, flat_weight=0.1, edge_weigh
     
     # 改进6: 应用形态学操作，进一步清理边缘检测结果
     # 使用小的形态学核来平滑权重图
-    morph_kernel = torch.ones(3, 3, device=gt_image.device).unsqueeze(0).unsqueeze(0) / 9.0
+    morph_kernel = torch.ones(3, 3, device=device).unsqueeze(0).unsqueeze(0) / 9.0
     flatness_score = F.conv2d(flatness_score.unsqueeze(0), morph_kernel, padding=1).squeeze(0)
     
     # 计算最终权重
     weight_map = edge_weight + (flat_weight - edge_weight) * flatness_score
     
     return weight_map
+
+# 添加全局缓存字典
+_flatness_weight_cache = {}
+
+def precompute_flatness_weights(viewpoint_stack, kernel_size=7, flat_weight=0.1, edge_weight=0.02):
+    """
+    预计算所有视角的平坦区域权重
+    Args:
+        viewpoint_stack: 视角列表
+        kernel_size: 计算梯度的核大小
+        flat_weight: 平坦区域的权重
+        edge_weight: 边缘区域的权重
+    """
+    global _flatness_weight_cache
+    _flatness_weight_cache.clear()
+    
+    print("预计算平坦区域权重...")
+    for i, viewpoint_cam in enumerate(viewpoint_stack):
+        # 确保视角有正确的ID
+        viewpoint_cam.id = i
+        gt_image = viewpoint_cam.original_image
+        # 确保图像在CUDA设备上
+        if not gt_image.is_cuda:
+            gt_image = gt_image.cuda()
+        weight = compute_flatness_weight(
+            gt_image,
+            kernel_size=kernel_size,
+            flat_weight=flat_weight,
+            edge_weight=edge_weight
+        )
+        _flatness_weight_cache[i] = weight
+    print(f"完成 {len(viewpoint_stack)} 个视角的权重预计算")
+
+def get_cached_flatness_weight(viewpoint_idx):
+    """
+    获取预计算的平坦区域权重
+    Args:
+        viewpoint_idx: 视角索引
+    Returns:
+        weight_map: 预计算的权重图 [1, H, W]
+    """
+    global _flatness_weight_cache
+    if viewpoint_idx not in _flatness_weight_cache:
+        raise ValueError(f"视角 {viewpoint_idx} 的平坦区域权重未预计算")
+    return _flatness_weight_cache[viewpoint_idx]
 
 def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration, scene_radius=None):
     """
@@ -261,13 +260,23 @@ def compute_training_losses(render_pkg, gt_image, viewpoint_cam, opt, iteration,
     # 计算基础法线误差
     normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))  # [H, W]
     
-    # 计算自适应权重图 - 直接使用改进的多方向梯度检测
-    adaptive_weights = compute_flatness_weight(
-        gt_image, 
-        kernel_size=getattr(opt, 'flatness_kernel_size', 7),
-        flat_weight=getattr(opt, 'flat_normal_weight', 0.1),
-        edge_weight=getattr(opt, 'edge_normal_weight', 0.02)
-    )  # [1, H, W]
+    # 使用预计算的权重图
+    try:
+        if not hasattr(viewpoint_cam, 'id'):
+            raise ValueError("视角没有ID属性")
+        adaptive_weights = get_cached_flatness_weight(viewpoint_cam.id)
+    except (ValueError, AttributeError) as e:
+        # 如果缓存未命中，回退到实时计算
+        print(f"警告：视角 {getattr(viewpoint_cam, 'id', 'unknown')} 的权重未预计算，使用实时计算")
+        adaptive_weights = compute_flatness_weight(
+            gt_image, 
+            kernel_size=getattr(opt, 'flatness_kernel_size', 7),
+            flat_weight=getattr(opt, 'flat_normal_weight', 0.1),
+            edge_weight=getattr(opt, 'edge_normal_weight', 0.02)
+        )
+        # 将新计算的权重添加到缓存中
+        if hasattr(viewpoint_cam, 'id'):
+            _flatness_weight_cache[viewpoint_cam.id] = adaptive_weights
     
     # 应用自适应权重
     weighted_normal_error = normal_error * adaptive_weights.squeeze(0)  # [H, W]
