@@ -66,8 +66,7 @@ def handle_densification_and_pruning(gaussians, opt, iteration, viewspace_point_
     
     # 标准密度化和修剪
     if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-        size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-        gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold)
+        gaussians.densify_and_prune(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, None)
     
     # 基于贡献的修剪
     if iteration % opt.contribution_prune_interval == 0 and iteration < opt.prune_strategy_switch_iter:
@@ -80,11 +79,6 @@ def handle_densification_and_pruning(gaussians, opt, iteration, viewspace_point_
         
         # 使用固定的修剪比例，不再动态调整
         gaussians.prune_low_contribution(contribution, prune_ratio=pruning_manager.current_prune_ratio)
-    
-    # 重置不透明度
-    if (opt.opacity_reset_interval > 0 and iteration % opt.opacity_reset_interval == 0) or \
-       (white_background and iteration == opt.densify_from_iter):
-        gaussians.reset_opacity()
 
 def get_random_viewpoint(viewpoint_stack, scene):
     """获取随机视角"""

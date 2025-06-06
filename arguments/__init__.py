@@ -103,8 +103,7 @@ class OptimizationParams(ParamGroup):
 
         self.densification_interval = 100  # 密集化间隔
         self.percent_dense = 0.01  # 密集化百分比
-        self.opacity_reset_interval = 0  # 不透明度重置间隔
-        self.densify_from_iter = 500  # 开始密集化的迭代次数
+        self.densify_from_iter = 0  # 开始密集化的迭代次数
         self.densify_until_iter = 30000  # 停止密集化的迭代次数
         self.densify_grad_threshold = 0.0002  # 密集化梯度阈值
         super().__init__(parser, "Optimization Parameters")
